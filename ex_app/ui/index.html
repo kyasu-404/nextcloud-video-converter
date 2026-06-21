@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Video Converter</title>
+  <link rel="stylesheet" href="{{PROXY_BASE}}/ui/style.css">
+</head>
+<body>
+  <div class="vc-app">
+  <div class="card">
+    <div class="header">
+      <div>
+        <p class="eyebrow">Nextcloud ExApp</p>
+        <h1>Конвертировать видео</h1>
+      </div>
+      <button type="button" id="closeBtn" class="ghost">Закрыть</button>
+    </div>
+
+    <!-- Notification permission banner -->
+    <div id="notif_banner" style="display:none; margin: 10px 0 0; padding: 10px 14px; border-radius: 10px; background: color-mix(in srgb, var(--app-primary) 10%, transparent); border: 1px solid color-mix(in srgb, var(--app-primary) 35%, transparent); font-size: 13px; grid-column: 1 / -1; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+      <span style="color: var(--app-text);">🔔 Включите уведомления браузера, чтобы получать оповещения о завершении конвертации</span>
+      <button type="button" id="allowNotifBtn" style="flex-shrink:0; border:0; border-radius:8px; padding:6px 14px; background:var(--app-primary); color:var(--app-primary-text); font-weight:700; font-size:13px; cursor:pointer;">Разрешить</button>
+    </div>
+
+    <!-- Content Wrapper for when file is selected -->
+    <div id="content_wrap" class="layout-split">
+      <!-- Left Panel -->
+      <div class="left-panel">
+        <div class="filebox" id="filebox_selected">
+          <div><span>Файл</span><strong id="display_name">{{FILE_NAME}}</strong></div>
+          <div><span>ID</span><code id="display_id">{{FILE_ID}}</code></div>
+          <div><span>Путь</span><code id="display_path">{{FILE_PATH}}</code></div>
+        </div>
+
+        <div class="metadata-box" id="metadata_box" style="display: none;">
+        <p id="md_loading" style="color: var(--app-muted);">Загрузка метаданных...</p>
+        <div id="md_content" style="display: none;">
+          <p><span>Разрешение</span> <strong id="md_res"></strong></p>
+          <p><span>Длительность</span> <strong id="md_duration"></strong></p>
+          <p><span>Видео</span> <strong id="md_vcodec"></strong></p>
+          <p><span>Аудио</span> <strong id="md_acodec"></strong></p>
+          <p><span>Размер</span> <strong id="md_size"></strong></p>
+          <p><span>Битрейт</span> <strong id="md_bitrate"></strong></p>
+          <p><span>HDR</span> <strong id="md_hdr"></strong></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Panel -->
+    <div class="right-panel">
+      <form id="convertForm">
+        <input type="hidden" id="file_id" value="{{FILE_ID}}">
+        <input type="hidden" id="file_path" value="{{FILE_PATH}}">
+        <input type="hidden" id="file_name" value="{{FILE_NAME}}">
+
+        <div class="section-title">Базовые</div>
+        <div class="grid">
+          <label>Контейнер
+            <select id="container">
+              <option value="mp4" selected>MP4</option>
+              <option value="mkv">MKV</option>
+              <option value="mov">MOV</option>
+            </select>
+          </label>
+
+          <label>Видеокодек
+            <select id="video_codec">
+              <option value="h264" selected>H.264 (рекомендуется)</option>
+              <option value="h265">H.265</option>
+              <option value="av1">AV1</option>
+              <option value="copy">Copy</option>
+            </select>
+          </label>
+
+          <label>Разрешение
+            <select id="resolution">
+              <option value="original">Оригинал</option>
+              <option value="1080p">1080p</option>
+              <option value="720p">720p</option>
+              <option value="4k">4k</option>
+            </select>
+          </label>
+
+          <label>Качество
+            <select id="quality_type">
+              <option value="crf" selected>CRF</option>
+              <option value="bitrate">Битрейт (кбит/с)</option>
+            </select>
+          </label>
+          
+          <label id="crf_wrap">Уровень CRF
+            <select id="quality_crf">
+              <option value="18">18</option>
+              <option value="20">20</option>
+              <option value="23" selected>23</option>
+              <option value="28">28</option>
+              <option value="32">32</option>
+              <option value="custom">Пользовательский</option>
+            </select>
+          </label>
+
+          <label id="crf_custom_wrap" style="display: none;">Пользовательский CRF
+            <input type="number" id="custom_crf" class="input-text" value="23" min="0" max="51">
+          </label>
+
+          <label id="bitrate_wrap" style="display: none;">Битрейт видео
+            <input type="number" id="custom_bitrate" class="input-text" value="3000" min="100" max="1000000" step="100">
+          </label>
+
+          <label>Аудиокодек
+            <select id="audio_codec">
+              <option value="aac" selected>AAC (рекомендуется)</option>
+              <option value="opus">Opus</option>
+              <option value="mp3">MP3</option>
+              <option value="flac">FLAC</option>
+              <option value="copy">Оригинал</option>
+            </select>
+          </label>
+
+          <label>Битрейт аудио
+            <select id="audio_bitrate">
+              <option value="" selected>Оригинал</option>
+              <option value="128">128 kbps</option>
+              <option value="192">192 kbps</option>
+              <option value="320">320 kbps</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="checkbox" id="fast_start_wrap">
+          <input type="checkbox" id="fast_start" checked>
+          Оптимизировать для веба (Fast Start)
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" id="delete_original">
+          Удалить оригинал
+        </label>
+
+        <div style="height: 16px;"></div>
+        <label class="checkbox" style="font-weight: 700; margin-bottom: 10px;">
+          <input type="checkbox" id="enable_advanced">
+          Использовать дополнительные настройки
+        </label>
+        
+        <div id="advanced_wrap" style="display: none; border-top: 1px solid var(--app-border); padding-top: 10px; margin-top: 5px;">
+          <div class="grid" style="margin-top: 10px;">
+            <label>Preset
+              <select id="preset">
+                <option value="fast">Fast</option>
+                <option value="medium" selected>Medium</option>
+                <option value="slow">Slow</option>
+              </select>
+            </label>
+
+            <label>FPS
+              <select id="fps_select">
+                <option value="copy" selected>Оригинал</option>
+                <option value="custom">Пользовательский</option>
+              </select>
+            </label>
+            <label id="fps_custom_wrap" style="display: none;">Пользовательский FPS
+              <input type="number" id="fps_custom" class="input-text" value="30" min="1" max="240" step="0.001">
+            </label>
+
+            <label>Режим цвета
+              <select id="hdr_mode">
+                <option value="copy" selected>Без изменений</option>
+                <option value="sdr">SDR</option>
+                <option value="hdr">HDR</option>
+              </select>
+            </label>
+
+            <label id="tonemap_wrap" style="display: none;">Tonemap
+              <select id="tonemap">
+                <option value="none">Нет</option>
+                <option value="hable" selected>Hable</option>
+                <option value="mobius">Mobius</option>
+                <option value="reinhard">Reinhard</option>
+                <option value="clip">Clip</option>
+              </select>
+            </label>
+
+            <label>Глубина цвета
+              <select id="bit_depth">
+                <option value="copy" selected>Оригинал</option>
+                <option value="8">8 bit</option>
+                <option value="10">10 bit</option>
+              </select>
+            </label>
+
+            <label>Субтитры
+              <select id="subtitles">
+                <option value="true" selected>Копировать</option>
+                <option value="false">Удалить</option>
+              </select>
+            </label>
+
+            <label>Метаданные
+              <select id="metadata">
+                <option value="copy" selected>Копировать</option>
+                <option value="remove">Удалить</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <div class="status" id="est_size_status" style="display: none; background: transparent; border: 0; padding: 0; margin: 10px 0 0; color: var(--app-primary); font-weight: 600;">
+          Ожидаемый размер: <span id="est_size_val"></span>
+        </div>
+
+        <div class="actions">
+          <button type="button" id="cancelBtn" class="btn-danger" style="display: none;">Отменить</button>
+          <button type="submit" id="submitBtn">Конвертировать</button>
+        </div>
+      </form>
+
+      <div class="status" id="status" style="display: none;">
+        <div id="status_text"></div>
+        <div class="vc-progress-bar" id="progress_container">
+          <div class="vc-progress-fill" id="progress_fill"></div>
+        </div>
+      </div>
+    </div>
+    
+    </div>
+
+    <!-- Empty State Box -->
+    <div class="filebox" id="filebox_empty" style="display: none; text-align: center; padding: 40px; margin-top: 20px;">
+      <p style="margin: 0 0 14px; color: var(--app-muted);">Файл не выбран</p>
+      <button type="button" id="pickFileBtn" class="ghost">Выбрать видео</button>
+    </div>
+  </div>
+  </div>
+
+  <script>window.__PROXY_BASE__ = '{{PROXY_BASE}}';</script>
+  <script src="{{PROXY_BASE}}/ui/app.js"></script>
+</body>
+</html>

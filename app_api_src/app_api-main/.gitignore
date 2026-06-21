@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+# SPDX-License-Identifier: AGPL-3.0-or-later
+.code-workspace
+.DS_Store
+.idea/
+.vscode/
+.vscode-upload.json
+.*.sw*
+node_modules
+.venv
+vendor
+_build
+certs
+.php-cs-fixer.cache
+dev

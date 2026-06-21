@@ -1,0 +1,55 @@
+# docker-compose.yml — DEV / MANUAL mode
+#
+# This file is used for LOCAL DEVELOPMENT only. In production, the container is
+# deployed automatically by AppAPI through the HaRP daemon (docker-install).
+#
+# When running under HaRP, AppAPI injects these env vars automatically:
+#   APP_ID, APP_SECRET, APP_VERSION, APP_DISPLAY_NAME, APP_HOST, APP_PORT,
+#   APP_PERSISTENT_STORAGE, NEXTCLOUD_URL, COMPUTE_DEVICE, AA_VERSION
+#
+# For manual-install dev mode (NEXTCLOUD_USER set), the ExApp registers UI
+# elements at startup using OCS API calls with basic auth.
+
+services:
+  video-converter:
+    build: .
+    container_name: nc_app_video_converter
+    restart: unless-stopped
+    environment:
+      # === AppAPI standard env vars (injected automatically by HaRP in production) ===
+      APP_ID: "video_converter"
+      APP_SECRET: "video_converter_secret_12345"
+      APP_VERSION: "1.0.2"
+      APP_DISPLAY_NAME: "Video Converter"
+      # APP_HOST is the container hostname used by HaRP to route requests.
+      # In manual mode it is not used by the app itself.
+      APP_HOST: "video_converter"
+      APP_PORT: "8080"
+      # In HaRP mode, APP_PERSISTENT_STORAGE points to the volume mounted by HaRP.
+      # In dev mode, we use /app/data as a persistent directory.
+      APP_PERSISTENT_STORAGE: "/app/data"
+      AA_VERSION: "4.0.0"
+
+      # === Nextcloud connection ===
+      NEXTCLOUD_URL: "https://nc.kyasu.site"
+
+      # === Manual-install registration (only needed for dev/manual mode) ===
+      # Remove or leave blank to run in HaRP mode (UI registered via PUT /enabled).
+      NEXTCLOUD_USER: ""
+      NEXTCLOUD_APP_PASSWORD: ""
+
+      # === Optional ===
+      NEXTCLOUD_INSECURE_TLS: "false"
+      COMPUTE_DEVICE: "CPU"
+
+    volumes:
+      - converter_data:/app/data
+    networks:
+      - nextcloud-net
+
+volumes:
+  converter_data:
+
+networks:
+  nextcloud-net:
+    external: true

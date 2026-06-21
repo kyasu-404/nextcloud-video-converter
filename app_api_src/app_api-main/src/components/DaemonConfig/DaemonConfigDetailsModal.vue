@@ -1,0 +1,196 @@
+<!--
+  - SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+  - SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+<template>
+	<div class="daemon-config-modal">
+		<NcModal :show="show"
+			:name="t('app_api', 'Deploy daemon configuration') + ' - ' + daemon.display_name"
+			@close="closeModal">
+			<div class="daemon-config-modal-details" :aria-label="t('app_api', 'Deploy daemon configuration details')">
+				<h2>{{ t('app_api', 'Deploy daemon') }} - {{ daemon.display_name }}</h2>
+
+				<NcNoteCard v-if="isDefault" type="success">
+					{{ t('app_api', 'Default daemon. ExApps will be installed on it') }}
+				</NcNoteCard>
+
+				<NcNoteCard v-if="daemon.accepts_deploy_id === 'manual-install'" type="warning">
+					{{ t('app_api', 'The "Manual install" daemon is usually used for development. It cannot be set as the default daemon.') }}
+				</NcNoteCard>
+
+				<NcNoteCard v-if="isDeprecatedDirectDocker" type="warning">
+					{{ t('app_api', 'Direct Docker access (Docker Socket Proxy) is deprecated and will be removed in Nextcloud 35. Please migrate to a HaRP-based daemon.') }}
+				</NcNoteCard>
+
+				<NcNoteCard v-if="daemon.accepts_deploy_id === 'kubernetes-install'" type="info">
+					{{ t('app_api', 'This is a Kubernetes daemon managed via CLI.') }}
+				</NcNoteCard>
+
+				<p><b>{{ t('app_api', 'ExApps installed') }}: </b>{{ daemon.exAppsCount }}</p>
+				<p><b>{{ t('app_api', 'Name') }}: </b>{{ daemon.name }}</p>
+				<p><b>{{ t('app_api', 'Protocol') }}: </b>{{ daemon.protocol }}</p>
+				<p><b>{{ t('app_api', 'Host') }}: </b>{{ daemon.host }}</p>
+				<p v-if="daemon.deploy_config.harp && daemon.accepts_deploy_id !== 'kubernetes-install'">
+					<b>{{ t('app_api', 'ExApp direct communication (FRP disabled)') }}: </b>
+					{{ daemon.deploy_config.harp.exapp_direct ?? false }}
+				</p>
+
+				<template v-if="daemon.deploy_config.kubernetes">
+					<h3>{{ t('app_api', 'Kubernetes settings') }}</h3>
+					<p><b>{{ t('app_api', 'Expose type') }}: </b>{{ daemon.deploy_config.kubernetes.expose_type }}</p>
+					<p v-if="daemon.deploy_config.kubernetes.node_port">
+						<b>{{ t('app_api', 'Node port') }}: </b>{{ daemon.deploy_config.kubernetes.node_port }}
+					</p>
+					<p v-if="daemon.deploy_config.kubernetes.upstream_host">
+						<b>{{ t('app_api', 'Upstream host') }}: </b>{{ daemon.deploy_config.kubernetes.upstream_host }}
+					</p>
+					<p v-if="daemon.deploy_config.kubernetes.external_traffic_policy">
+						<b>{{ t('app_api', 'External traffic policy') }}: </b>{{ daemon.deploy_config.kubernetes.external_traffic_policy }}
+					</p>
+					<p v-if="daemon.deploy_config.kubernetes.load_balancer_ip">
+						<b>{{ t('app_api', 'Load balancer IP') }}: </b>{{ daemon.deploy_config.kubernetes.load_balancer_ip }}
+					</p>
+					<p><b>{{ t('app_api', 'Node address type') }}: </b>{{ daemon.deploy_config.kubernetes.node_address_type }}</p>
+				</template>
+
+				<h3>{{ t('app_api', 'Deploy options') }}</h3>
+				<p><b>{{ t('app_api', 'Docker network') }}: </b>{{ daemon.deploy_config.net }}</p>
+				<p><b>{{ t('app_api', 'Nextcloud URL') }}: </b>{{ daemon.deploy_config.nextcloud_url }}</p>
+				<p><b>{{ t('app_api', 'HaProxy password') }}: </b>{{ daemon.deploy_config?.haproxy_password ? '**************' : t('app_api', '(not set)') }}</p>
+				<p>
+					<b>{{ t('app_api', 'GPU support') }}:</b> {{ daemon.deploy_config.computeDevice && daemon.deploy_config?.computeDevice?.id !== 'cpu' || false }}
+				</p>
+				<p v-if="daemon.deploy_config.computeDevice">
+					<b>{{ t('app_api', 'Computation device') }}:</b> {{ daemon.deploy_config?.computeDevice?.label }}
+				</p>
+				<p><b>{{ t('app_api', 'Memory limit') }}:</b> {{ formatMemoryLimit(daemon.deploy_config?.resourceLimits?.memory) }}</p>
+
+				<p><b>{{ t('app_api', 'CPU limit') }}:</b> {{ formatCpuLimit(daemon.deploy_config?.resourceLimits?.nanoCPUs) }}</p>
+
+				<div v-if="daemon.deploy_config.additional_options" class="additional-options">
+					<h3>{{ t('app_api', 'Additional options') }}</h3>
+					<p v-for="option_key in Object.keys(daemon.deploy_config.additional_options)" :key="option_key">
+						<b>{{ option_key }}:</b> {{ daemon.deploy_config.additional_options[option_key] }}
+					</p>
+				</div>
+
+				<div class="actions">
+					<NcButton v-if="daemon.accepts_deploy_id !== 'manual-install'" @click="verifyConnection">
+						{{ t('app_api', 'Check connection') }}
+						<template #icon>
+							<NcLoadingIcon v-if="verifying" :size="20" />
+							<Connection v-else :size="20" />
+						</template>
+					</NcButton>
+				</div>
+			</div>
+		</NcModal>
+	</div>
+</template>
+
+<script>
+import axios from '@nextcloud/axios'
+import { generateUrl } from '@nextcloud/router'
+import { showSuccess, showError } from '@nextcloud/dialogs'
+
+import NcModal from '@nextcloud/vue/components/NcModal'
+import NcButton from '@nextcloud/vue/components/NcButton'
+import NcNoteCard from '@nextcloud/vue/components/NcNoteCard'
+
+import NcLoadingIcon from '@nextcloud/vue/components/NcLoadingIcon'
+import Connection from 'vue-material-design-icons/Connection.vue'
+
+export default {
+	name: 'DaemonConfigDetailsModal',
+	components: {
+		NcModal,
+		NcButton,
+		NcNoteCard,
+		NcLoadingIcon,
+		Connection,
+	},
+	props: {
+		daemon: {
+			type: Object,
+			required: true,
+			default: () => {},
+		},
+		show: {
+			type: Boolean,
+			required: true,
+			default: false,
+		},
+		isDefault: {
+			type: Boolean,
+			required: true,
+			default: () => false,
+		},
+	},
+	data() {
+		return {
+			verifying: false,
+		}
+	},
+	computed: {
+		isDeprecatedDirectDocker() {
+			return this.daemon.accepts_deploy_id === 'docker-install' && !this.daemon.deploy_config?.harp
+		},
+	},
+	methods: {
+		closeModal() {
+			this.$emit('update:show', false)
+		},
+		verifyConnection() {
+			this.verifying = true
+			axios.post(generateUrl(`/apps/app_api/daemons/${this.daemon.name}/check`))
+				.then(res => {
+					if (res.data.success) {
+						showSuccess(t('app_api', 'Daemon connection successful'))
+					} else {
+						showError(t('app_api', 'Failed to connect to the daemon. Check the logs'))
+					}
+					this.verifying = false
+				})
+				.catch(err => {
+					this.verifying = false
+					showError(t('app_api', 'Failed to check connection to the daemon. Check the logs'))
+					console.debug(err)
+				})
+		},
+		formatMemoryLimit(memoryBytes) {
+			if (!memoryBytes) {
+				return t('app_api', 'Unlimited')
+			}
+			const memoryMiB = memoryBytes / (1024 * 1024)
+			if (memoryMiB >= 1024) {
+				const memoryGiB = memoryMiB / 1024
+				return t('app_api', '{size} GiB', { size: memoryGiB.toFixed(1) })
+			}
+			return t('app_api', '{size} MiB', { size: Math.round(memoryMiB) })
+		},
+		formatCpuLimit(nanoCpus) {
+			if (!nanoCpus) {
+				return t('app_api', 'Unlimited')
+			}
+			const cpus = nanoCpus / 1000000000
+			return n('app_api', '{n} CPU', '{n} CPUs', cpus, { n: cpus.toFixed(2) })
+		},
+	},
+}
+</script>
+
+<style scoped lang="scss">
+.daemon-config-modal-details {
+	padding: 20px;
+
+	h2 {
+		margin-top: 0;
+	}
+}
+
+.actions {
+	display: flex;
+	justify-content: space-between;
+	margin: 20px 0;
+}
+</style>

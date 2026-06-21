@@ -1,0 +1,314 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  - SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+  - SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+<files psalm-version="6.7.1@a2f190972555ea01b0cfcc1913924d6c5fc1a64e">
+  <file src="lib/AppInfo/Application.php">
+    <InvalidArgument>
+      <code><![CDATA[LoadFilesPluginListener::class]]></code>
+      <code><![CDATA[LoadMenuEntriesListener::class]]></code>
+      <code><![CDATA[SabrePluginAuthInitListener::class]]></code>
+    </InvalidArgument>
+  </file>
+  <file src="lib/Controller/ExAppProxyController.php">
+    <UndefinedClass>
+      <code><![CDATA[$options['headers']]]></code>
+      <code><![CDATA[$options['headers']]]></code>
+      <code><![CDATA[CookieJar]]></code>
+      <code><![CDATA[CookieJar]]></code>
+      <code><![CDATA[RequestOptions]]></code>
+      <code><![CDATA[RequestOptions]]></code>
+      <code><![CDATA[RequestOptions]]></code>
+      <code><![CDATA[RequestOptions]]></code>
+      <code><![CDATA[RequestOptions]]></code>
+      <code><![CDATA[RequestOptions]]></code>
+      <code><![CDATA[RequestOptions]]></code>
+      <code><![CDATA[RequestOptions]]></code>
+      <code><![CDATA[RequestOptions]]></code>
+      <code><![CDATA[RequestOptions]]></code>
+      <code><![CDATA[RequestOptions]]></code>
+      <code><![CDATA[RequestOptions]]></code>
+      <code><![CDATA[RequestOptions]]></code>
+      <code><![CDATA[RequestOptions]]></code>
+      <code><![CDATA[RequestOptions]]></code>
+      <code><![CDATA[SetCookie]]></code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Controller/ExAppsPageController.php">
+    <UndefinedClass>
+      <code><![CDATA[$this->categoryFetcher]]></code>
+      <code><![CDATA[DependencyAnalyzer]]></code>
+      <code><![CDATA[OC_App]]></code>
+      <code><![CDATA[Platform]]></code>
+      <code><![CDATA[VersionParser]]></code>
+      <code><![CDATA[private]]></code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Fetcher/AppAPIFetcher.php">
+    <TooManyArguments>
+      <code><![CDATA[fetch]]></code>
+    </TooManyArguments>
+    <UndefinedClass>
+      <code><![CDATA[$appDataFactory]]></code>
+      <code><![CDATA[$e]]></code>
+      <code><![CDATA[ConnectException]]></code>
+      <code><![CDATA[ConnectException]]></code>
+      <code><![CDATA[Factory]]></code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Fetcher/ExAppFetcher.php">
+    <UndefinedClass>
+      <code><![CDATA[$this->compareVersion]]></code>
+      <code><![CDATA[$this->compareVersion]]></code>
+      <code><![CDATA[$this->compareVersion]]></code>
+      <code><![CDATA[$this->compareVersion]]></code>
+      <code><![CDATA[$versionParser]]></code>
+      <code><![CDATA[$versionParser]]></code>
+      <code><![CDATA[Factory]]></code>
+      <code><![CDATA[VersionParser]]></code>
+      <code><![CDATA[private]]></code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Listener/GetTaskProcessingProvidersListener.php">
+    <MissingTemplateParam>
+      <code><![CDATA[IEventListener]]></code>
+    </MissingTemplateParam>
+  </file>
+  <file src="lib/Listener/LoadFilesPluginListener.php">
+    <ImplementedParamTypeMismatch>
+      <code><![CDATA[$event]]></code>
+    </ImplementedParamTypeMismatch>
+    <InvalidDocblock>
+      <code><![CDATA[class LoadFilesPluginListener implements IEventListener {]]></code>
+    </InvalidDocblock>
+    <InvalidTemplateParam>
+      <code><![CDATA[IEventListener]]></code>
+    </InvalidTemplateParam>
+    <MissingTemplateParam>
+      <code><![CDATA[IEventListener]]></code>
+    </MissingTemplateParam>
+    <UndefinedClass>
+      <code><![CDATA[LoadAdditionalScriptsEvent]]></code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Listener/LoadMenuEntriesListener.php">
+    <ImplementedParamTypeMismatch>
+      <code><![CDATA[$event]]></code>
+    </ImplementedParamTypeMismatch>
+    <InvalidArgument>
+      <code><![CDATA[static function () use ($menuEntry) {
+				$appId = $menuEntry->getAppid();
+				$entryName = $menuEntry->getName();
+				$icon = $menuEntry->getIcon();
+				$urlGenerator = Server::get(IURLGenerator::class);
+				return [
+					'id' => Application::APP_ID . '_' . $appId . '_' . $entryName,
+					'type' => 'link',
+					'app' => Application::APP_ID,
+					'href' => $urlGenerator->linkToRoute(
+						'app_api.TopMenu.viewExAppPage', ['appId' => $appId, 'name' => $entryName]
+					),
+					'icon' => $icon === ''
+						? $urlGenerator->imagePath('app_api', 'app.svg')
+						: $urlGenerator->linkToRoute(
+							'app_api.ExAppProxy.ExAppGet', ['appId' => $appId, 'other' => $icon]
+						),
+					'name' => Server::get(IFactory::class)->get($appId)->t($menuEntry->getDisplayName()),
+				];
+			}]]></code>
+    </InvalidArgument>
+    <InvalidDocblock>
+      <code><![CDATA[readonly class LoadMenuEntriesListener implements IEventListener {]]></code>
+    </InvalidDocblock>
+    <InvalidTemplateParam>
+      <code><![CDATA[IEventListener]]></code>
+    </InvalidTemplateParam>
+    <MissingTemplateParam>
+      <code><![CDATA[IEventListener]]></code>
+    </MissingTemplateParam>
+  </file>
+  <file src="lib/Listener/SabrePluginAuthInitListener.php">
+    <ImplementedParamTypeMismatch>
+      <code><![CDATA[$event]]></code>
+    </ImplementedParamTypeMismatch>
+    <InvalidDocblock>
+      <code><![CDATA[class SabrePluginAuthInitListener implements IEventListener {]]></code>
+    </InvalidDocblock>
+    <InvalidTemplateParam>
+      <code><![CDATA[IEventListener]]></code>
+    </InvalidTemplateParam>
+    <MissingTemplateParam>
+      <code><![CDATA[IEventListener]]></code>
+    </MissingTemplateParam>
+  </file>
+  <file src="lib/Middleware/ExAppUiMiddleware.php">
+    <InvalidNullableReturnType>
+      <code><![CDATA[beforeOutput]]></code>
+    </InvalidNullableReturnType>
+    <NullableReturnStatement>
+      <code><![CDATA[$output]]></code>
+    </NullableReturnStatement>
+  </file>
+  <file src="lib/Service/ExAppOccService.php">
+    <InvalidReturnStatement>
+      <code><![CDATA[new class($occCommand, $container) extends Command {
+			private LoggerInterface $logger;
+			private PublicFunctions $service;
+
+			public function __construct(
+				private ExAppOccCommand $occCommand,
+				private ContainerInterface $container,
+			) {
+				parent::__construct();
+
+				$this->logger = $this->container->get(LoggerInterface::class);
+				$this->service = $this->container->get(PublicFunctions::class);
+			}
+
+			protected function configure() {
+				$this->setName($this->occCommand->getName());
+				$this->setDescription($this->occCommand->getDescription());
+				$this->setHidden(filter_var($this->occCommand->getHidden(), FILTER_VALIDATE_BOOLEAN));
+				foreach ($this->occCommand->getArguments() as $argument) {
+					$this->addArgument(
+						$argument['name'],
+						$this->buildArgumentMode($argument['mode']),
+						$argument['description'],
+						in_array($argument['mode'], ['optional', 'array']) ? $argument['default'] : null,
+					);
+				}
+				foreach ($this->occCommand->getOptions() as $option) {
+					$this->addOption(
+						$option['name'],
+						$option['shortcut'] ?? null,
+						$this->buildOptionMode($option['mode']),
+						$option['description'],
+						$this->buildOptionMode($option['mode']) !== InputOption::VALUE_NONE
+							? $option['default'] ?? null
+							: null
+					);
+				}
+				foreach ($this->occCommand->getUsages() as $usage) {
+					$this->addUsage($usage);
+				}
+			}
+
+			protected function execute(InputInterface $input, OutputInterface $output): int {
+				if (count($this->occCommand->getArguments()) > 0) {
+					$arguments = [];
+					foreach ($this->occCommand->getArguments() as $argument) {
+						$arguments[$argument['name']] = $input->getArgument($argument['name']);
+					}
+				} else {
+					$arguments = null;
+				}
+				if (count($this->occCommand->getOptions()) > 0) {
+					$options = [];
+					foreach ($this->occCommand->getOptions() as $option) {
+						$options[$option['name']] = $input->getOption($option['name']);
+					}
+				} else {
+					$options = null;
+				}
+
+				$executeHandler = $this->occCommand->getExecuteHandler();
+				$response = $this->service->exAppRequest($this->occCommand->getAppid(), $executeHandler,
+					params: [
+						'occ' => [
+							'arguments' => $arguments,
+							'options' => $options,
+						],
+					],
+					options: [
+						'stream' => true,
+						'timeout' => 0,
+					]
+				);
+
+				if (is_array($response) && isset($response['error'])) {
+					$output->writeln(sprintf('[%s] command executeHandler failed. Error: %s', $this->occCommand->getName(), $response['error']));
+					$this->logger->error(sprintf('[%s] command executeHandler failed. Error: %s', $this->occCommand->getName(), $response['error']), [
+						'app' => $this->occCommand->getAppid(),
+					]);
+					return 1;
+				}
+
+				if ($response->getStatusCode() !== Http::STATUS_OK) {
+					$output->writeln(sprintf('[%s] command executeHandler failed', $this->occCommand->getName()));
+					$this->logger->error(sprintf('[%s] command executeHandler failed', $this->occCommand->getName()), [
+						'app' => $this->occCommand->getAppid(),
+					]);
+					return 1;
+				}
+
+				$body = $response->getBody();
+				if (is_resource($body)) {
+					while (!feof($body)) {
+						$output->write(fread($body, 1024));
+					}
+				}
+
+				return 0;
+			}
+
+			private function buildArgumentMode(string $mode): int {
+				$modes = explode(',', $mode);
+				$argumentMode = 0;
+				foreach ($modes as $mode) {
+					$argumentMode |= $this->_buildArgumentMode($mode);
+				}
+				return $argumentMode;
+			}
+
+			private function _buildArgumentMode(string $mode): int {
+				if ($mode === 'required') {
+					return InputArgument::REQUIRED;
+				}
+				if ($mode === 'optional') {
+					return InputArgument::OPTIONAL;
+				}
+				if ($mode === 'array') {
+					return InputArgument::IS_ARRAY;
+				}
+				return InputArgument::OPTIONAL;
+			}
+
+			private function buildOptionMode(string $mode): int {
+				if ($mode === 'required') {
+					return InputOption::VALUE_REQUIRED;
+				}
+				if ($mode === 'optional') {
+					return InputOption::VALUE_OPTIONAL;
+				}
+				if ($mode === 'none') {
+					return InputOption::VALUE_NONE;
+				}
+				if ($mode === 'array') {
+					return InputOption::VALUE_IS_ARRAY;
+				}
+				if ($mode === 'negatable') {
+					return InputOption::VALUE_NEGATABLE;
+				}
+				return InputOption::VALUE_NONE;
+			}
+		}]]></code>
+    </InvalidReturnStatement>
+    <InvalidReturnType>
+      <code><![CDATA[Command]]></code>
+    </InvalidReturnType>
+  </file>
+  <file src="lib/Service/ExAppService.php">
+    <UndefinedClass>
+      <code><![CDATA[\OC\Memcache\APCu]]></code>
+      <code><![CDATA[\OC\Memcache\APCu]]></code>
+    </UndefinedClass>
+  </file>
+  <file src="lib/Service/HarpService.php">
+    <UndefinedClass>
+      <code><![CDATA[$e]]></code>
+      <code><![CDATA[$e]]></code>
+      <code><![CDATA[ClientException]]></code>
+    </UndefinedClass>
+  </file>
+</files>

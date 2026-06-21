@@ -1,0 +1,394 @@
+.vc-app {
+  --app-bg: var(--color-main-background, #f5f7fb);
+  --app-text: var(--color-main-text, #111827);
+  --app-card-bg: var(--color-main-background, #fff);
+  --app-border: var(--color-border, #d1d5db);
+  --app-primary: var(--color-primary-element, var(--color-primary, #2563eb));
+  --app-primary-text: var(--color-primary-element-text, var(--color-primary-text, #fff));
+  --app-muted: var(--color-text-maxcontrast, #6b7280);
+  --app-input-bg: var(--color-main-background, #fff);
+  --app-hover: var(--color-background-hover, #f0f2f5);
+  --app-select-bg: var(--color-main-background, #fff);
+  --app-select-text: var(--color-main-text, #111827);
+  --app-danger: var(--color-text-error, #ef4444);
+  --app-success: var(--color-border-success, #10b981);
+
+  width: 100%;
+  min-height: 0;
+  overflow: visible;
+  padding: clamp(8px, 1.4vw, 18px);
+  box-sizing: border-box;
+  font-family: var(--font-face, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif);
+  background: transparent;
+  color: var(--app-text);
+}
+
+@media (prefers-color-scheme: dark) {
+  .vc-app {
+    --app-bg: var(--color-main-background, #1a1a2e);
+    --app-text: var(--color-main-text, #e5e7eb);
+    --app-card-bg: var(--color-main-background, #16213e);
+    --app-border: var(--color-border, #374151);
+    --app-hover: var(--color-background-hover, #1f2937);
+    --app-input-bg: var(--color-main-background, #1f2937);
+    --app-select-bg: var(--color-main-background, #1f2937);
+    --app-select-text: var(--color-main-text, #e5e7eb);
+  }
+}
+
+.vc-app,
+.vc-app * {
+  box-sizing: border-box;
+}
+
+.vc-app .card {
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  min-height: 0;
+  margin: 0;
+  overflow: visible;
+  background: var(--app-card-bg);
+  color: var(--app-text);
+  border: 1px solid var(--app-border);
+  border-radius: 16px;
+  padding: clamp(16px, 2vw, 24px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.vc-app .header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.vc-app .header>div {
+  min-width: 0;
+}
+
+.vc-app .eyebrow {
+  margin: 0 0 4px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--app-muted);
+}
+
+.vc-app h1 {
+  margin: 0;
+  font-size: clamp(21px, 2vw, 26px);
+  line-height: 1.2;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.vc-app .layout-split {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  gap: clamp(18px, 3vw, 32px);
+  align-items: start;
+  min-width: 0;
+}
+
+.vc-app .left-panel,
+.vc-app .right-panel {
+  min-width: 0;
+}
+
+.vc-app .left-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.vc-app .right-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.vc-app .section-title {
+  margin: 4px 0 12px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--app-border);
+  color: var(--app-muted);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.vc-app .filebox,
+.vc-app .metadata-box,
+.vc-app .status {
+  background: var(--app-hover);
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+  color: var(--app-text);
+}
+
+.vc-app .filebox {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 14px 16px;
+}
+
+.vc-app .filebox span {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--app-muted);
+  font-size: 11px;
+}
+
+.vc-app .filebox strong,
+.vc-app .metadata-box strong {
+  overflow-wrap: anywhere;
+}
+
+.vc-app code {
+  color: var(--app-text);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.vc-app .metadata-box {
+  padding: 12px 14px;
+  font-size: 13px;
+}
+
+.vc-app .metadata-box p {
+  display: grid;
+  grid-template-columns: minmax(88px, 42%) 1fr;
+  gap: 8px;
+  margin: 0 0 7px;
+}
+
+.vc-app .metadata-box p:last-child {
+  margin-bottom: 0;
+}
+
+.vc-app .metadata-box span {
+  color: var(--app-muted);
+}
+
+.vc-app .grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 12px 14px;
+}
+
+.vc-app label {
+  display: block;
+  min-width: 0;
+  color: var(--app-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.vc-app .input-text,
+.vc-app label select {
+  display: block;
+  width: 100%;
+  min-height: 38px;
+  margin-top: 6px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  background-color: var(--app-select-bg);
+  color: var(--app-select-text);
+  font-size: 13px;
+  transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+}
+
+.vc-app .input-text {
+  padding: 8px 10px;
+}
+
+.vc-app label select {
+  padding: 8px 34px 8px 10px;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 16px;
+}
+
+.vc-app .input-text:focus,
+.vc-app label select:focus {
+  outline: none;
+  border-color: var(--app-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-primary) 18%, transparent);
+}
+
+.vc-app label select:hover {
+  border-color: var(--app-primary);
+}
+
+.vc-app label select option {
+  background-color: var(--app-select-bg);
+  color: var(--app-select-text);
+}
+
+.vc-app .checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 14px;
+  line-height: 1.35;
+}
+
+.vc-app .checkbox input {
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  margin: 1px 0 0;
+  accent-color: var(--app-primary);
+  cursor: pointer;
+}
+
+.vc-app .actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  margin-top: 18px;
+  flex-wrap: wrap;
+}
+
+.vc-app button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 10px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+  cursor: pointer;
+  white-space: normal;
+  transition: opacity 0.15s, box-shadow 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.vc-app button:not(.ghost):not(.btn-danger) {
+  background: var(--app-primary);
+  color: var(--app-primary-text);
+}
+
+.vc-app button:not(.ghost):not(.btn-danger):hover {
+  opacity: 0.92;
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--app-primary) 28%, transparent);
+}
+
+.vc-app button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.vc-app .ghost {
+  border: 1px solid var(--app-border);
+  background: var(--app-hover);
+  color: var(--app-text);
+}
+
+.vc-app .ghost:hover {
+  border-color: var(--app-primary);
+  color: var(--app-primary);
+}
+
+.vc-app .btn-danger {
+  border: 1px solid var(--app-danger);
+  background: transparent;
+  color: var(--app-danger);
+}
+
+.vc-app .btn-danger:hover {
+  background: color-mix(in srgb, var(--app-danger) 10%, transparent);
+}
+
+.vc-app .status {
+  min-height: 22px;
+  margin-top: 14px;
+  padding: 12px 14px;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.vc-app .status[data-kind="done"] {
+  background: color-mix(in srgb, var(--app-success) 12%, transparent);
+  border-color: var(--app-success);
+}
+
+.vc-app .status[data-kind="error"] {
+  background: color-mix(in srgb, var(--app-danger) 12%, transparent);
+  border-color: var(--app-danger);
+}
+
+.vc-app .vc-progress-bar {
+  display: none;
+  height: 10px;
+  margin-top: 10px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--app-border) 60%, transparent);
+}
+
+.vc-app .vc-progress-fill {
+  width: 0%;
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--app-primary), color-mix(in srgb, var(--app-primary) 70%, var(--app-success)));
+  transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (max-width: 920px) {
+  .vc-app .layout-split {
+    grid-template-columns: 1fr;
+  }
+
+  .vc-app .grid {
+    grid-template-columns: repeat(2, minmax(150px, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .vc-app {
+    width: 100%;
+    min-height: 100%;
+  }
+
+  .vc-app .card {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .vc-app .header {
+    align-items: stretch;
+    flex-direction: column;
+    margin-bottom: 16px;
+  }
+
+  .vc-app .header .ghost {
+    width: 100%;
+  }
+
+  .vc-app .grid {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .vc-app .metadata-box p {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
+  .vc-app .actions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .vc-app .actions button {
+    width: 100%;
+  }
+}

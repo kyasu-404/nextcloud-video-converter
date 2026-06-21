@@ -1,0 +1,64 @@
+<?xml version="1.0"?>
+<!--
+  - SPDX-FileCopyrightText: 2023 Nextcloud GmbH and Nextcloud contributors
+  - SPDX-License-Identifier: AGPL-3.0-or-later
+-->
+<psalm
+	errorLevel="4"
+	resolveFromConfigFile="true"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xmlns="https://getpsalm.org/schema/config"
+	xsi:schemaLocation="https://getpsalm.org/schema/config"
+	errorBaseline="tests/psalm-baseline.xml"
+	findUnusedCode="false"
+	findUnusedBaselineEntry="true"
+	ensureOverrideAttribute="false"
+	phpVersion="8.2"
+>
+	<projectFiles>
+		<directory name="lib" />
+		<ignoreFiles>
+			<directory name="vendor" />
+		</ignoreFiles>
+	</projectFiles>
+	<extraFiles>
+		<directory name="vendor" />
+	</extraFiles>
+	<issueHandlers>
+		<UndefinedClass>
+			<errorLevel type="suppress">
+				<referencedClass name="OC" />
+				<referencedClass name="Sabre\DAV\Server" />
+				<referencedClass name="Sabre\DAV\Auth\Plugin" />
+				<referencedClass name="Sabre\DAV\ServerPlugin" />
+				<referencedClass name="Sabre\DAV\Auth\Backend\BackendInterface" />
+				<referencedClass name="OCA\DAV\Events\SabrePluginAuthInitEvent" />
+				<referencedClass name="GuzzleHttp\Client" />
+				<referencedClass name="GuzzleHttp\Exception\GuzzleException" />
+				<referencedClass name="OC\Core\Command\Base" />
+				<referencedClass name="OC\Security\CSP\ContentSecurityPolicyNonceManager" />
+				<referencedClass name="Symfony\Component\Console\Command\Command" />
+			</errorLevel>
+		</UndefinedClass>
+		<MissingDependency errorLevel="suppress" />
+		<UndefinedDocblockClass>
+			<errorLevel type="suppress">
+				<referencedClass name="Doctrine\DBAL\Schema\Schema" />
+				<referencedClass name="Doctrine\DBAL\Schema\SchemaException" />
+				<referencedClass name="Doctrine\DBAL\Driver\Statement" />
+				<referencedClass name="Doctrine\DBAL\Schema\Table" />
+				<referencedClass name="Sabre\DAV\Server" />
+				<referencedClass name="Sabre\DAV\Auth\Plugin" />
+				<referencedClass name="Sabre\DAV\ServerPlugin" />
+				<referencedClass name="Sabre\DAV\Auth\Backend\BackendInterface" />
+				<referencedClass name="OCA\DAV\Events\SabrePluginAuthInitEvent" />
+				<referencedClass name="GuzzleHttp\Client" />
+				<referencedClass name="GuzzleHttp\Exception\GuzzleException" />
+			</errorLevel>
+		</UndefinedDocblockClass>
+	</issueHandlers>
+	<stubs>
+		<file name="tests/stubs/oca_dav_events_sabrepluginaddevent.php"/>
+		<file name="tests/stubs/oca_talk_events.php"/>
+	</stubs>
+</psalm>

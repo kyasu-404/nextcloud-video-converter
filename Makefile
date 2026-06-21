@@ -1,0 +1,48 @@
+# Makefile for video_converter ExApp
+# Usage:
+#   make build          — build Docker image locally
+#   make push           — push to registry (requires REGISTRY variable)
+#   make build-push     — build + push
+#   make dev            — run locally with docker-compose (manual/dev mode)
+#
+# Examples:
+#   make build REGISTRY=ghcr.io/kyasu
+#   make push  REGISTRY=ghcr.io/kyasu
+
+APP_ID      := video_converter
+APP_VERSION := 1.0.2
+REGISTRY    ?= ghcr.io/kyasu
+IMAGE_NAME  := $(REGISTRY)/video-converter-exapp
+IMAGE_TAG   ?= latest
+
+.PHONY: build push build-push dev clean
+
+build:
+	docker build \
+		--platform linux/amd64 \
+		-t $(IMAGE_NAME):$(IMAGE_TAG) \
+		-t $(IMAGE_NAME):$(APP_VERSION) \
+		.
+
+push:
+	docker push $(IMAGE_NAME):$(IMAGE_TAG)
+	docker push $(IMAGE_NAME):$(APP_VERSION)
+
+build-push: build push
+
+# Load image into local Docker daemon without pushing to remote registry.
+# Useful for testing with a local HaRP that has access to the Docker socket.
+load:
+	docker build \
+		--platform linux/amd64 \
+		--load \
+		-t $(IMAGE_NAME):$(IMAGE_TAG) \
+		.
+
+# Run in dev mode (manual-install, registers UI at startup via OCS API)
+dev:
+	docker compose up --build
+
+clean:
+	docker compose down -v
+	docker rmi $(IMAGE_NAME):$(IMAGE_TAG) $(IMAGE_NAME):$(APP_VERSION) 2>/dev/null || true

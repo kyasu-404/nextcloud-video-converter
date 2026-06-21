@@ -1,0 +1,9 @@
+.git
+*.zip
+*.tmp
+# Pre-compiled binaries (not needed in Docker build, Go recompiles from source)
+ex_app/ex_app
+ex_app/ex_app_bin
+ex_app/ex_app_bin.exe
+# App API source (only used for reference)
+app_api_src/
