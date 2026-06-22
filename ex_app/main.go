@@ -44,14 +44,18 @@ var (
 	}{m: make(map[string]context.CancelFunc)}
 
 	globalAppAPIAuth string
+	globalAppAPIUser string
 	globalAuthMutex  sync.RWMutex
 )
 
-func updateAppAPIAuth(auth string) {
+func updateAppAPIAuth(auth, userID string) {
+	globalAuthMutex.Lock()
+	defer globalAuthMutex.Unlock()
 	if auth != "" {
-		globalAuthMutex.Lock()
 		globalAppAPIAuth = auth
-		globalAuthMutex.Unlock()
+	}
+	if userID != "" {
+		globalAppAPIUser = userID
 	}
 }
 
@@ -269,11 +273,12 @@ func ensureTrailingSlash(s string) string {
 func logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		
-		if auth := r.Header.Get("AUTHORIZATION-APP-API"); auth != "" {
-			updateAppAPIAuth(auth)
-		}
-		
+
+		// Capture the signed AppAPI auth header that Nextcloud sends to us.
+		// We re-use the exact same value when calling Nextcloud APIs back.
+		auth := r.Header.Get("AUTHORIZATION-APP-API")
+		updateAppAPIAuth(auth, "")
+
 		next.ServeHTTP(w, r)
 		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
 	})
@@ -317,22 +322,54 @@ func makeEnabledHandler(cfg Config) http.HandlerFunc {
 			return
 		}
 
-		// Считываем параметр enabled из query string или тела
-		enabledParam := r.URL.Query().Get("enabled")
-		if enabledParam == "" {
-			var body struct {
-				Enabled string `json:"enabled"`
-			}
-			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err == nil {
-				enabledParam = body.Enabled
+		// Read the body first so we can parse app_api_user AND enabled.
+		// AppAPI may send enabled as bool true/false, int 1/0, or string "1"/"0".
+		bodyBytes, _ := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+		log.Printf("/enabled PUT: query=%s body=%s auth-present=%v",
+			r.URL.RawQuery, string(bodyBytes), r.Header.Get("AUTHORIZATION-APP-API") != "")
+
+		var rawBody map[string]json.RawMessage
+		_ = json.Unmarshal(bodyBytes, &rawBody)
+
+		// Extract app_api_user so we know the internal user Nextcloud is using.
+		if raw, ok := rawBody["app_api_user"]; ok {
+			var userID string
+			if err := json.Unmarshal(raw, &userID); err == nil && userID != "" {
+				updateAppAPIAuth("", userID)
+				log.Printf("/enabled: app_api_user=%s", userID)
 			}
 		}
 
-		isEnabled := enabledParam == "true" || enabledParam == "1"
+		// Determine enabled state: check query param first, then body.
+		// Body value may be bool, integer, or string.
+		isEnabled := false
+		if qv := r.URL.Query().Get("enabled"); qv != "" {
+			isEnabled = qv == "1" || qv == "true"
+		} else if raw, ok := rawBody["enabled"]; ok {
+			// Try bool first
+			var b bool
+			if err := json.Unmarshal(raw, &b); err == nil {
+				isEnabled = b
+			} else {
+				// Try number
+				var n int
+				if err := json.Unmarshal(raw, &n); err == nil {
+					isEnabled = n != 0
+				} else {
+					// Try string
+					var s string
+					if err := json.Unmarshal(raw, &s); err == nil {
+						isEnabled = s == "1" || s == "true"
+					}
+				}
+			}
+		}
+
+		log.Printf("/enabled: isEnabled=%v", isEnabled)
 
 		if isEnabled && cfg.NextcloudURL != "" && cfg.AppID != "" {
-			// AppAPI сигнализирует активацию — регистрируем UI
-			log.Println("/enabled: регистрируем UI-элементы в Nextcloud")
+			// AppAPI signals activation — register UI elements.
+			log.Println("/enabled: registering UI elements in Nextcloud")
 			go func() {
 				if err := registerTopMenu(cfg); err != nil {
 					log.Printf("Ошибка регистрации Top Menu: %v", err)
