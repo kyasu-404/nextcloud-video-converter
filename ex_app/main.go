@@ -42,7 +42,24 @@ var (
 		sync.Mutex
 		m map[string]context.CancelFunc
 	}{m: make(map[string]context.CancelFunc)}
+
+	globalAppAPIAuth string
+	globalAuthMutex  sync.RWMutex
 )
+
+func updateAppAPIAuth(auth string) {
+	if auth != "" {
+		globalAuthMutex.Lock()
+		globalAppAPIAuth = auth
+		globalAuthMutex.Unlock()
+	}
+}
+
+func getAppAPIAuth() string {
+	globalAuthMutex.RLock()
+	defer globalAuthMutex.RUnlock()
+	return globalAppAPIAuth
+}
 
 type Config struct {
 	Port          string
@@ -210,7 +227,7 @@ func loadConfig() Config {
 		BasePath:    ensureTrailingSlash(env("NEXTCLOUD_BASE_PATH", "/remote.php/webdav")),
 		OutputDir:   env("APP_PERSISTENT_STORAGE", env("OUTPUT_DIR", "/tmp")),
 		InsecureTLS: envBool("NEXTCLOUD_INSECURE_TLS", false),
-		AppID:       env("APP_ID", ""),
+		AppID:       env("APP_ID", "video_converter_exapp"),
 		AppSecret:   env("APP_SECRET", ""),
 		AppVersion:  env("APP_VERSION", "1.0.0"),
 		AAVersion:   env("AA_VERSION", "4.0.0"),
@@ -252,6 +269,11 @@ func ensureTrailingSlash(s string) string {
 func logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		
+		if auth := r.Header.Get("AUTHORIZATION-APP-API"); auth != "" {
+			updateAppAPIAuth(auth)
+		}
+		
 		next.ServeHTTP(w, r)
 		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
 	})
@@ -308,7 +330,7 @@ func makeEnabledHandler(cfg Config) http.HandlerFunc {
 
 		isEnabled := enabledParam == "true" || enabledParam == "1"
 
-		if isEnabled && cfg.NextcloudURL != "" && cfg.AppID != "" && cfg.AppSecret != "" {
+		if isEnabled && cfg.NextcloudURL != "" && cfg.AppID != "" {
 			// AppAPI сигнализирует активацию — регистрируем UI
 			log.Println("/enabled: регистрируем UI-элементы в Nextcloud")
 			go func() {
@@ -338,8 +360,8 @@ func makeEnabledHandler(cfg Config) http.HandlerFunc {
 // route (/apps/app_api/embedded/{appId}/{name}/...) can resolve it.
 // Without this entry, TopMenuController::viewExAppPage returns 404.
 func registerTopMenu(cfg Config) error {
-	if cfg.NextcloudURL == "" || cfg.AppID == "" || cfg.AppSecret == "" {
-		return errors.New("NEXTCLOUD_URL / APP_ID / APP_SECRET are required")
+	if cfg.NextcloudURL == "" || cfg.AppID == "" {
+		return errors.New("NEXTCLOUD_URL / APP_ID are required")
 	}
 
 	payload := map[string]any{
@@ -353,7 +375,7 @@ func registerTopMenu(cfg Config) error {
 		return err
 	}
 
-	endpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/apps/app_api/api/v1/ui/top-menu")
+	endpoint, err := buildNextcloudAPIURL(cfg, "/apps/app_api/api/v1/ui/top-menu")
 	if err != nil {
 		return err
 	}
@@ -365,8 +387,8 @@ func registerTopMenu(cfg Config) error {
 // When the embedded page loads, AppAPI will inject this script, which creates
 // an iframe pointing to the ExApp's proxy URL.
 func registerScript(cfg Config) error {
-	if cfg.NextcloudURL == "" || cfg.AppID == "" || cfg.AppSecret == "" {
-		return errors.New("NEXTCLOUD_URL / APP_ID / APP_SECRET are required")
+	if cfg.NextcloudURL == "" || cfg.AppID == "" {
+		return errors.New("NEXTCLOUD_URL / APP_ID are required")
 	}
 
 	payload := map[string]any{
@@ -380,7 +402,7 @@ func registerScript(cfg Config) error {
 		return err
 	}
 
-	endpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/apps/app_api/api/v1/ui/script")
+	endpoint, err := buildNextcloudAPIURL(cfg, "/apps/app_api/api/v1/ui/script")
 	if err != nil {
 		return err
 	}
@@ -389,17 +411,8 @@ func registerScript(cfg Config) error {
 }
 
 func registerFilesAction(cfg Config) error {
-	if cfg.NextcloudURL == "" {
-		return errors.New("NEXTCLOUD_URL is required")
-	}
-	if cfg.NextcloudUser == "" || cfg.NextcloudPass == "" {
-		return errors.New("NEXTCLOUD_USER and NEXTCLOUD_APP_PASSWORD are required")
-	}
 	if cfg.AppID == "" {
 		return errors.New("APP_ID is required")
-	}
-	if cfg.AppSecret == "" {
-		return errors.New("APP_SECRET is required")
 	}
 
 	payload := map[string]any{
@@ -417,13 +430,13 @@ func registerFilesAction(cfg Config) error {
 		return err
 	}
 
-	endpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/apps/app_api/api/v2/ui/files-actions-menu")
+	endpoint, err := buildNextcloudAPIURL(cfg, "/apps/app_api/api/v2/ui/files-actions-menu")
 	if err != nil {
 		return err
 	}
 
 	if err := postOCSJSON(cfg, endpoint, body, true); err != nil {
-		fallback, fbErr := buildNextcloudAPIURL(cfg, "/ocs/v1.php/apps/app_api/api/v1/ui/files-actions-menu")
+		fallback, fbErr := buildNextcloudAPIURL(cfg, "/apps/app_api/api/v1/ui/files-actions-menu")
 		if fbErr != nil {
 			return err
 		}
@@ -1556,10 +1569,13 @@ func postOCSJSON(cfg Config, endpoint string, body []byte, useAppAPIAuth bool) e
 		req.SetBasicAuth(cfg.NextcloudUser, cfg.NextcloudPass)
 	}
 	if useAppAPIAuth {
-		if cfg.AppID == "" || cfg.AppSecret == "" || cfg.AppVersion == "" || cfg.AAVersion == "" {
-			return errors.New("APP_ID / APP_SECRET / APP_VERSION / AA_VERSION are required for AppAPI auth")
+		if cfg.AppID == "" || cfg.AppVersion == "" || cfg.AAVersion == "" {
+			return errors.New("APP_ID / APP_VERSION / AA_VERSION are required for AppAPI auth")
 		}
-		authValue := base64.StdEncoding.EncodeToString([]byte(cfg.NextcloudUser + ":" + cfg.AppSecret))
+		authValue := getAppAPIAuth()
+		if authValue == "" {
+			return errors.New("AppAPI auth required but AUTHORIZATION-APP-API header was not received yet")
+		}
 		req.Header.Set("AA-VERSION", cfg.AAVersion)
 		req.Header.Set("EX-APP-ID", cfg.AppID)
 		req.Header.Set("EX-APP-VERSION", cfg.AppVersion)

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <info xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
       xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
-  <id>video_converter</id>
+  <id>video_converter_exapp</id>
   <name>Video Converter</name>
   <summary>Convert videos from the Files menu</summary>
   <description>ExApp backend for ffmpeg conversion with WebDAV upload back to Nextcloud.</description>

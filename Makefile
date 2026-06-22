@@ -9,7 +9,7 @@
 #   make build REGISTRY=ghcr.io/kyasu
 #   make push  REGISTRY=ghcr.io/kyasu
 
-APP_ID      := video_converter
+APP_ID      := video_converter_exapp
 APP_VERSION := 1.0.2
 REGISTRY    ?= ghcr.io/kyasu
 IMAGE_NAME  := $(REGISTRY)/video-converter-exapp
