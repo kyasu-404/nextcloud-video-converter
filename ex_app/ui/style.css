@@ -2,12 +2,12 @@
   --app-bg: var(--color-main-background, #ffffff);
   --app-text: var(--color-main-text, #222222);
   --app-surface: var(--color-main-background, #ffffff);
-  --app-sidebar: var(--color-background-hover, #f5f6f8);
+  --app-sidebar: color-mix(in srgb, var(--color-background-hover, #f5f6f8) 82%, var(--color-main-background, #ffffff));
   --app-border: var(--color-border, #d8d8d8);
   --app-primary: var(--color-primary-element, #00679e);
   --app-primary-text: var(--color-primary-element-text, #ffffff);
   --app-muted: var(--color-text-maxcontrast, #6b7280);
-  --app-input-bg: var(--color-main-background, #ffffff);
+  --app-input-bg: color-mix(in srgb, var(--color-main-background, #ffffff) 94%, var(--color-background-hover, #f2f2f2));
   --app-hover: var(--color-background-hover, #f2f2f2);
   --app-danger: var(--color-text-error, #db0606);
   --app-success: var(--color-border-success, #128345);
@@ -24,6 +24,10 @@
 .vc-app,
 .vc-app * {
   box-sizing: border-box;
+}
+
+.app-video-converter-content {
+  background: var(--color-main-background, #ffffff) !important;
 }
 
 .app-video-converter-content .vc-app {
@@ -115,6 +119,7 @@
   border-radius: 8px;
   background: var(--app-sidebar);
   color: var(--app-text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .04);
 }
 
 .vc-app .filebox {

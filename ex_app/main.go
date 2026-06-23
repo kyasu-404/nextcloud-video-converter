@@ -130,7 +130,6 @@ type ActionPayload struct {
 type MediaInfo struct {
 	DurationSeconds float64
 	IsHDR           bool
-	Container       string
 	FPS             string
 	BitDepth        string
 	HasSubtitles    bool
@@ -1465,8 +1464,7 @@ func probeMedia(ctx context.Context, path string) (MediaInfo, error) {
 
 	var data struct {
 		Format struct {
-			Duration   string `json:"duration"`
-			FormatName string `json:"format_name"`
+			Duration string `json:"duration"`
 		} `json:"format"`
 		Streams []struct {
 			CodecType        string            `json:"codec_type"`
@@ -1491,7 +1489,6 @@ func probeMedia(ctx context.Context, path string) (MediaInfo, error) {
 	if d, err := strconv.ParseFloat(data.Format.Duration, 64); err == nil {
 		info.DurationSeconds = d
 	}
-	info.Container = data.Format.FormatName
 
 	for _, s := range data.Streams {
 		if s.CodecType == "audio" && info.AudioCodec == "" {
@@ -2060,10 +2057,9 @@ func probeRemoteMedia(ctx context.Context, cfg Config, cookie, appAPIAuth, remot
 
 	var data struct {
 		Format struct {
-			Duration   string `json:"duration"`
-			Size       string `json:"size"`
-			BitRate    string `json:"bit_rate"`
-			FormatName string `json:"format_name"`
+			Duration string `json:"duration"`
+			Size     string `json:"size"`
+			BitRate  string `json:"bit_rate"`
 		} `json:"format"`
 		Streams []struct {
 			CodecType        string            `json:"codec_type"`
@@ -2095,7 +2091,6 @@ func probeRemoteMedia(ctx context.Context, cfg Config, cookie, appAPIAuth, remot
 	if b, err := strconv.Atoi(data.Format.BitRate); err == nil {
 		info.Bitrate = b
 	}
-	info.Container = data.Format.FormatName
 
 	for _, s := range data.Streams {
 		if s.CodecType == "audio" && info.AudioCodec == "" {
