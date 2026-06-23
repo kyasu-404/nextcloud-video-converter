@@ -1647,6 +1647,9 @@ func buildNextcloudAPIURL(cfg Config, endpoint string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// AppAPI commonly injects NEXTCLOUD_URL with a trailing /index.php.
+	// OCS endpoints are rooted at /ocs, not below /index.php.
+	u.Path = strings.TrimSuffix(strings.TrimRight(u.Path, "/"), "/index.php")
 	u.Path = joinURLPath(u.Path, endpoint)
 	return u.String(), nil
 }
