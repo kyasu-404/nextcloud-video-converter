@@ -480,8 +480,8 @@ func registerTopMenu(cfg Config) error {
 }
 
 // registerScript registers a JS file for the top-menu embedded page.
-// When the embedded page loads, AppAPI will inject this script, which creates
-// an iframe pointing to the ExApp's proxy URL.
+// When the embedded page loads, AppAPI injects this script into the Nextcloud
+// page; the script then loads the ExApp UI through the AppAPI proxy.
 func registerScript(cfg Config) error {
 	if cfg.NextcloudURL == "" || cfg.AppID == "" {
 		return errors.New("NEXTCLOUD_URL / APP_ID are required")
@@ -611,15 +611,16 @@ func actionHandler(w http.ResponseWriter, r *http.Request) {
 	// no query params). The JS appends "?fileIds=..." automatically.
 	// The embedded page will be served at:
 	//   /apps/app_api/embedded/{appId}/convert?fileIds=...
-	// which loads the ExApp's /ui/convert page in an iframe via the proxy.
+	// which loads the ExApp UI via the proxy.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"redirect_handler": "convert",
 	})
 }
 
-// makeInitJSHandler serves a small bootstrap that embeds the ExApp UI through
-// the official AppAPI proxy. Keeping the app in an iframe isolates its CSS from
-// the Nextcloud shell and prevents the global theme/background from leaking in.
+// makeInitJSHandler serves a small bootstrap that embeds the ExApp UI into the
+// AppAPI top-menu page. It deliberately avoids an iframe: Nextcloud sends
+// frame-ancestors 'none' on some responses, so nested same-origin frames can be
+// blocked by the browser.
 func makeInitJSHandler(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -631,33 +632,66 @@ func makeInitJSHandler(cfg Config) http.HandlerFunc {
   var appId = ` + fmt.Sprintf("%q", cfg.AppID) + `;
   var params = new URLSearchParams(window.location.search);
   var fileIds = params.get('fileIds') || '';
-
   var el = document.getElementById('content');
   if (!el) return;
+
+  el.style.width = '100%';
+  el.style.height = 'calc(100vh - var(--header-height, 50px))';
+  el.style.minHeight = '0';
   el.style.padding = '0';
   el.style.margin = '0';
-  el.style.height = 'calc(100vh - 50px)';
-  el.style.minHeight = '520px';
-  el.style.overflow = 'hidden';
-  el.style.overflowX = 'hidden';
+  el.style.borderRadius = '0';
+  el.style.boxShadow = 'none';
+  el.style.background = 'var(--color-main-background)';
+  el.style.overflow = 'auto';
+  el.classList.add('app-video-converter-content');
 
-  var proxyPath = '/apps/app_api/proxy/' + appId + '/ui/convert.html';
-  var finalUrl = window.OC.generateUrl(proxyPath);
+  var proxyBase = window.OC.generateUrl('/apps/app_api/proxy/' + appId);
+  var finalUrl = proxyBase + '/ui/convert.html';
   if (fileIds) {
     finalUrl += '?fileIds=' + encodeURIComponent(fileIds);
   }
 
-  var iframe = document.createElement('iframe');
-  iframe.src = finalUrl;
-  iframe.title = 'Video Converter';
-  iframe.style.display = 'block';
-  iframe.style.width = '100%';
-  iframe.style.height = '100%';
-  iframe.style.border = '0';
-  iframe.style.background = 'var(--color-main-background)';
-  iframe.setAttribute('allow', 'clipboard-read; clipboard-write');
+  var nonce = '';
+  var nonceSource = document.querySelector('script[nonce]');
+  if (nonceSource) nonce = nonceSource.getAttribute('nonce') || '';
 
-  el.replaceChildren(iframe);
+  function loadStylesheet(href) {
+    var old = document.getElementById('video-converter-style');
+    if (old) old.remove();
+    var link = document.createElement('link');
+    link.id = 'video-converter-style';
+    link.rel = 'stylesheet';
+    link.href = href;
+    document.head.appendChild(link);
+  }
+
+  function loadScript(src) {
+    var old = document.getElementById('video-converter-app');
+    if (old) old.remove();
+    var script = document.createElement('script');
+    script.id = 'video-converter-app';
+    script.src = src;
+    if (nonce) script.setAttribute('nonce', nonce);
+    document.body.appendChild(script);
+  }
+
+  fetch(finalUrl, {
+    credentials: 'same-origin',
+    cache: 'no-store'
+  }).then(function(response) {
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    return response.text();
+  }).then(function(html) {
+    var doc = new DOMParser().parseFromString(html, 'text/html');
+    window.__PROXY_BASE__ = proxyBase;
+    el.replaceChildren.apply(el, Array.prototype.slice.call(doc.body.childNodes));
+    var bust = Date.now().toString();
+    loadStylesheet(proxyBase + '/ui/style.css?v=' + bust);
+    loadScript(proxyBase + '/ui/app.js?v=' + bust);
+  }).catch(function(error) {
+    el.innerHTML = '<div class="emptycontent"><div class="icon-error"></div><h2>Video Converter</h2><p>Не удалось загрузить интерфейс приложения.</p><p>' + String(error.message || error) + '</p></div>';
+  });
 })();
 `
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")

@@ -1,3 +1,4 @@
+(() => {
 const BASE = window.__PROXY_BASE__ || '';
 const form = document.getElementById('convertForm');
 const statusEl = document.getElementById('status');
@@ -378,3 +379,4 @@ form.addEventListener('submit', async (e) => {
     resetUI();
   }
 });
+})();
