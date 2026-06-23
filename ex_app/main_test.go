@@ -40,3 +40,11 @@ func TestBuildRemoteOutputPathKeepsSourceDirectory(t *testing.T) {
 		t.Fatalf("buildRemoteOutputPath() = %q, want %q", got, want)
 	}
 }
+
+func TestUserIDFromAppAPIAuth(t *testing.T) {
+	got := userIDFromAppAPIAuth("a3lhc3U6c2VjcmV0")
+	const want = "kyasu"
+	if got != want {
+		t.Fatalf("userIDFromAppAPIAuth() = %q, want %q", got, want)
+	}
+}

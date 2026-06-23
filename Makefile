@@ -10,7 +10,7 @@
 #   make push  REGISTRY=ghcr.io/kyasu-404
 
 APP_ID      := video_converter_exapp
-APP_VERSION := 1.0.5
+APP_VERSION := 1.0.6
 REGISTRY    ?= ghcr.io/kyasu-404
 IMAGE_NAME  := $(REGISTRY)/nextcloud-video-converter
 IMAGE_TAG   ?= latest

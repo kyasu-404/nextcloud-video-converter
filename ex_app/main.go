@@ -617,10 +617,9 @@ func actionHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// makeInitJSHandler returns a handler that serves a small JS bootstrap script.
-//   - File action context (fileIds present): opens the converter in a new browser tab
-//     and redirects the current page back to Files, so the user stays in Files.
-//   - Top menu context (no fileIds): embeds the converter inline in the page content area.
+// makeInitJSHandler serves a small bootstrap that embeds the ExApp UI through
+// the official AppAPI proxy. Keeping the app in an iframe isolates its CSS from
+// the Nextcloud shell and prevents the global theme/background from leaking in.
 func makeInitJSHandler(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -637,55 +636,28 @@ func makeInitJSHandler(cfg Config) http.HandlerFunc {
   if (!el) return;
   el.style.padding = '0';
   el.style.margin = '0';
-  el.style.minHeight = '100%';
-  el.style.height = '100%';
-  el.style.overflowY = 'auto';
+  el.style.height = 'calc(100vh - 50px)';
+  el.style.minHeight = '520px';
+  el.style.overflow = 'hidden';
   el.style.overflowX = 'hidden';
-  el.style.webkitOverflowScrolling = 'touch';
-  
-  // Build the proxy URL using Nextcloud's built-in OC.generateUrl
+
   var proxyPath = '/apps/app_api/proxy/' + appId + '/ui/convert.html';
   var finalUrl = window.OC.generateUrl(proxyPath);
   if (fileIds) {
     finalUrl += '?fileIds=' + encodeURIComponent(fileIds);
   }
 
-  fetch(finalUrl).then(function(res) {
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    return res.text();
-  }).then(function(html) {
-    var proxyUiPath = window.OC.generateUrl('/apps/app_api/proxy/' + appId);
-    html = html.replace(/\{\{PROXY_BASE\}\}/g, proxyUiPath);
+  var iframe = document.createElement('iframe');
+  iframe.src = finalUrl;
+  iframe.title = 'Video Converter';
+  iframe.style.display = 'block';
+  iframe.style.width = '100%';
+  iframe.style.height = '100%';
+  iframe.style.border = '0';
+  iframe.style.background = 'var(--color-main-background)';
+  iframe.setAttribute('allow', 'clipboard-read; clipboard-write');
 
-    var doc = new DOMParser().parseFromString(html, 'text/html');
-    doc.querySelectorAll('link[rel="stylesheet"]').forEach(function(link) {
-      var href = link.getAttribute('href');
-      if (!href || document.querySelector('link[href="' + href + '"]')) return;
-      var newLink = document.createElement('link');
-      newLink.rel = 'stylesheet';
-      newLink.href = href;
-      document.head.appendChild(newLink);
-    });
-
-    el.innerHTML = doc.body ? doc.body.innerHTML : html;
-
-    // Scripts injected via innerHTML don't execute automatically
-    var scripts = el.querySelectorAll('script');
-    scripts.forEach(function(s) {
-      var newScript = document.createElement('script');
-      if (s.src) {
-        newScript.src = s.src;
-      } else {
-        newScript.innerHTML = s.innerHTML;
-      }
-      document.body.appendChild(newScript);
-      s.parentNode.removeChild(s);
-    });
-  }).catch(function(err) {
-    console.error('Failed to load Video Converter UI:', err);
-    el.innerHTML = '<div style="padding: 20px; color: red; font-family: sans-serif;">' +
-                   'Failed to load Video Converter UI: ' + err.message + '</div>';
-  });
+  el.replaceChildren(iframe);
 })();
 `
 		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
@@ -725,8 +697,6 @@ func makeUIHandler(cfg Config) http.HandlerFunc {
 			}
 		}
 
-		// We leave {{PROXY_BASE}} intact so that init.js can replace it dynamically
-		// with the exact absolute URL of the proxy, avoiding 404 errors.
 		// Cache busting for app.js and style.css so the user gets the latest UI
 		page := strings.ReplaceAll(string(b), "{{FILE_ID}}", fileID)
 		page = strings.ReplaceAll(page, "{{FILE_NAME}}", fileName)
@@ -775,6 +745,9 @@ func makeConvertHandler(cfg Config) http.HandlerFunc {
 		// Save the user's session cookie for WebDAV authentication
 		req.Cookie = r.Header.Get("Cookie")
 		req.AppAPIAuth = r.Header.Get("AUTHORIZATION-APP-API")
+		if req.UserID == "" {
+			req.UserID = userIDFromAppAPIAuth(req.AppAPIAuth)
+		}
 
 		if err := validateRequest(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -2031,19 +2004,14 @@ func probeRemoteMedia(ctx context.Context, cfg Config, cookie, appAPIAuth, remot
 }
 
 // sendNotification sends a Nextcloud notification to userID via AppAPI.
-// The params payload is flat (not nested), and userId is derived from
-// the AUTHORIZATION-APP-API header (base64(userId:secret)), so the
-// userID passed here must match the user in that credential.
+// The notification recipient is derived by AppAPI from AUTHORIZATION-APP-API,
+// so the auth header must encode the intended recipient as userId:secret.
 func sendNotification(cfg Config, userID, subject, message string) {
 	if cfg.NextcloudURL == "" || cfg.AppID == "" || userID == "" {
 		return
 	}
 
-	// Payload structure per ExNotificationsManager.php:
-	// $params['object'], $params['object_id'], $params['subject_type'], $params['subject_params']
-	// The userId is taken from the AUTHORIZATION-APP-API header (base64(userId:secret))
-	// so we encode userId into the auth header, not the body.
-	payload := map[string]any{
+	params := map[string]any{
 		"object":       "app_api",
 		"object_id":    taskNotificationID(userID),
 		"subject_type": "app_api_ex_app",
@@ -2054,6 +2022,7 @@ func sendNotification(cfg Config, userID, subject, message string) {
 			"rich_message_params": map[string]any{},
 		},
 	}
+	payload := map[string]any{"params": params}
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -2094,6 +2063,21 @@ func sendNotification(cfg Config, userID, subject, message string) {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		log.Printf("sendNotification: server returned %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
 	}
+}
+
+func userIDFromAppAPIAuth(authValue string) string {
+	if authValue == "" {
+		return ""
+	}
+	decoded, err := base64.StdEncoding.DecodeString(authValue)
+	if err != nil {
+		return ""
+	}
+	userID, _, ok := strings.Cut(string(decoded), ":")
+	if !ok {
+		return ""
+	}
+	return userID
 }
 
 func taskNotificationID(userID string) string {
