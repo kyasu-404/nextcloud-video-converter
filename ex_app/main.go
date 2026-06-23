@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -184,7 +185,12 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	log.Printf("Video Converter ExApp listening on :%s", cfg.Port)
+	frpMode := os.Getenv("HP_SHARED_KEY") != ""
+	if frpMode {
+		log.Println("Video Converter ExApp listening on unix:///tmp/exapp.sock")
+	} else {
+		log.Printf("Video Converter ExApp listening on :%s", cfg.Port)
+	}
 	if cfg.NextcloudURL != "" {
 		log.Printf("Nextcloud URL: %s", cfg.NextcloudURL)
 	}
@@ -212,6 +218,22 @@ func main() {
 				log.Println("Кнопка 'Конвертировать видео' успешно добавлена в Nextcloud!")
 			}
 		}()
+	}
+
+	if frpMode {
+		const socketPath = "/tmp/exapp.sock"
+		if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Fatalf("remove stale Unix socket: %v", err)
+		}
+		listener, err := net.Listen("unix", socketPath)
+		if err != nil {
+			log.Fatalf("listen on Unix socket: %v", err)
+		}
+		defer listener.Close()
+		if err := os.Chmod(socketPath, 0o666); err != nil {
+			log.Fatalf("set Unix socket permissions: %v", err)
+		}
+		log.Fatal(srv.Serve(listener))
 	}
 
 	log.Fatal(srv.ListenAndServe())
@@ -344,9 +366,9 @@ func initHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // makeEnabledHandler returns a handler that:
-// - GET  /enabled → возвращает статус включения
-// - PUT  /enabled → при enabled=true регистрирует UI-элементы в Nextcloud,
-//                    при enabled=false — ничего не делает (AppAPI управляет удалением)
+//   - GET  /enabled → возвращает статус включения
+//   - PUT  /enabled → при enabled=true регистрирует UI-элементы в Nextcloud,
+//     при enabled=false — ничего не делает (AppAPI управляет удалением)
 func makeEnabledHandler(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
