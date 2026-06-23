@@ -43,7 +43,7 @@ docker compose up -d
 ## File Actions Menu
 
 The AppAPI docs describe FileActionsMenu registration via:
-`POST /apps/app_api/api/v2/ui/files-actions-menu`
+`POST /ocs/v1.php/apps/app_api/api/v2/ui/files-actions-menu`
 
 The payload that AppAPI forwards to the ExApp includes:
 - `fileId`

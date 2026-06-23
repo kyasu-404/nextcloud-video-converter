@@ -158,7 +158,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/heartbeat", heartbeatHandler)
-	mux.HandleFunc("/init", initHandler)
+	mux.HandleFunc("/init", makeInitHandler(cfg))
 	mux.HandleFunc("/enabled", makeEnabledHandler(cfg))
 	mux.HandleFunc("/action/file", actionHandler)
 	mux.HandleFunc("/ui/convert.html", makeUIHandler(cfg))
@@ -295,6 +295,42 @@ func heartbeatHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func makeInitHandler(cfg Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if cfg.NextcloudURL != "" && cfg.AppID != "" {
+			if err := reportInitProgress(cfg, 100, ""); err != nil {
+				log.Printf("/init: failed to report init progress: %v", err)
+				writeJSON(w, http.StatusOK, map[string]any{"error": err.Error()})
+				return
+			}
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{"error": ""})
+	}
+}
+
+func reportInitProgress(cfg Config, progress int, errMsg string) error {
+	body, err := json.Marshal(map[string]any{
+		"progress": progress,
+		"error":    errMsg,
+	})
+	if err != nil {
+		return err
+	}
+
+	endpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/apps/app_api/ex-app/status")
+	if err != nil {
+		return err
+	}
+
+	return putOCSJSON(cfg, endpoint, body, true)
+}
+
 func initHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -412,7 +448,7 @@ func registerTopMenu(cfg Config) error {
 		return err
 	}
 
-	endpoint, err := buildNextcloudAPIURL(cfg, "/apps/app_api/api/v1/ui/top-menu")
+	endpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/apps/app_api/api/v1/ui/top-menu")
 	if err != nil {
 		return err
 	}
@@ -439,7 +475,7 @@ func registerScript(cfg Config) error {
 		return err
 	}
 
-	endpoint, err := buildNextcloudAPIURL(cfg, "/apps/app_api/api/v1/ui/script")
+	endpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/apps/app_api/api/v1/ui/script")
 	if err != nil {
 		return err
 	}
@@ -467,13 +503,13 @@ func registerFilesAction(cfg Config) error {
 		return err
 	}
 
-	endpoint, err := buildNextcloudAPIURL(cfg, "/apps/app_api/api/v2/ui/files-actions-menu")
+	endpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/apps/app_api/api/v2/ui/files-actions-menu")
 	if err != nil {
 		return err
 	}
 
 	if err := postOCSJSON(cfg, endpoint, body, true); err != nil {
-		fallback, fbErr := buildNextcloudAPIURL(cfg, "/apps/app_api/api/v1/ui/files-actions-menu")
+		fallback, fbErr := buildNextcloudAPIURL(cfg, "/ocs/v1.php/apps/app_api/api/v1/ui/files-actions-menu")
 		if fbErr != nil {
 			return err
 		}
@@ -1594,8 +1630,19 @@ func buildNextcloudAPIURL(cfg Config, endpoint string) (string, error) {
 }
 
 func postOCSJSON(cfg Config, endpoint string, body []byte, useAppAPIAuth bool) error {
+	return sendOCSJSON(cfg, http.MethodPost, endpoint, body, useAppAPIAuth)
+}
+
+func putOCSJSON(cfg Config, endpoint string, body []byte, useAppAPIAuth bool) error {
+	return sendOCSJSON(cfg, http.MethodPut, endpoint, body, useAppAPIAuth)
+}
+
+func sendOCSJSON(cfg Config, method, endpoint string, body []byte, useAppAPIAuth bool) error {
 	client := newHTTPClient(cfg.InsecureTLS)
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -1631,6 +1678,7 @@ func postOCSJSON(cfg Config, endpoint string, body []byte, useAppAPIAuth bool) e
 	}
 	return nil
 }
+
 func buildWebDAVURL(cfg Config, remotePath string) (string, error) {
 	if cfg.NextcloudURL == "" {
 		return "", errors.New("NEXTCLOUD_URL is required")

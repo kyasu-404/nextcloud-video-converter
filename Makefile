@@ -6,13 +6,13 @@
 #   make dev            — run locally with docker-compose (manual/dev mode)
 #
 # Examples:
-#   make build REGISTRY=ghcr.io/kyasu
-#   make push  REGISTRY=ghcr.io/kyasu
+#   make build REGISTRY=ghcr.io/kyasu-404
+#   make push  REGISTRY=ghcr.io/kyasu-404
 
 APP_ID      := video_converter_exapp
 APP_VERSION := 1.0.2
-REGISTRY    ?= ghcr.io/kyasu
-IMAGE_NAME  := $(REGISTRY)/video-converter-exapp
+REGISTRY    ?= ghcr.io/kyasu-404
+IMAGE_NAME  := $(REGISTRY)/nextcloud-video-converter
 IMAGE_TAG   ?= latest
 
 .PHONY: build push build-push dev clean
