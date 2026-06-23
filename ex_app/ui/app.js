@@ -196,12 +196,16 @@ async function fetchMetadata(filePath) {
     const data = await res.json();
     
     document.getElementById('md_res').textContent = (data.Width && data.Height) ? `${data.Width}x${data.Height}` : 'Неизвестно';
-    document.getElementById('md_duration').textContent = formatDuration(data.DurationSeconds);
+    document.getElementById('md_container').textContent = data.Container || 'Неизвестно';
     document.getElementById('md_vcodec').textContent = data.VideoCodec || 'Неизвестно';
     document.getElementById('md_acodec').textContent = data.AudioCodec || 'Неизвестно';
-    document.getElementById('md_size').textContent = data.Size ? formatBytes(data.Size) : 'Неизвестно';
+    document.getElementById('md_fps').textContent = data.FPS || 'Неизвестно';
+    document.getElementById('md_bit_depth').textContent = data.BitDepth || 'Неизвестно';
+    document.getElementById('md_subtitles').textContent = data.HasSubtitles ? 'Да' : 'Нет';
     document.getElementById('md_bitrate').textContent = data.Bitrate ? `${Math.round(data.Bitrate / 1000)} kbps` : 'Неизвестно';
     document.getElementById('md_hdr').textContent = data.IsHDR ? 'Да' : 'Нет';
+    document.getElementById('md_size').textContent = data.Size ? formatBytes(data.Size) : 'Неизвестно';
+    document.getElementById('md_duration').textContent = formatDuration(data.DurationSeconds);
     
     isHDR = data.IsHDR;
     mediaDuration = data.DurationSeconds || 0;

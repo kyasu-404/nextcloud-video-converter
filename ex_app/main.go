@@ -130,6 +130,10 @@ type ActionPayload struct {
 type MediaInfo struct {
 	DurationSeconds float64
 	IsHDR           bool
+	Container       string
+	FPS             string
+	BitDepth        string
+	HasSubtitles    bool
 	Transfer        string
 	Primaries       string
 	Space           string
@@ -212,6 +216,11 @@ func main() {
 				log.Printf("Ошибка регистрации скрипта: %v", err)
 			} else {
 				log.Println("Скрипт init.js зарегистрирован")
+			}
+			if err := registerStyle(cfg); err != nil {
+				log.Printf("style registration failed: %v", err)
+			} else {
+				log.Println("Style style.css registered")
 			}
 			if err := registerFilesAction(cfg); err != nil {
 				log.Printf("Ошибка регистрации кнопки в UI: %v", err)
@@ -440,6 +449,11 @@ func makeEnabledHandler(cfg Config) http.HandlerFunc {
 				} else {
 					log.Println("Скрипт init.js зарегистрирован")
 				}
+				if err := registerStyle(cfg); err != nil {
+					log.Printf("style registration failed: %v", err)
+				} else {
+					log.Println("Style style.css registered")
+				}
 				if err := registerFilesAction(cfg); err != nil {
 					log.Printf("Ошибка регистрации кнопки в UI: %v", err)
 				} else {
@@ -490,7 +504,7 @@ func registerScript(cfg Config) error {
 	payload := map[string]any{
 		"type": "top_menu",
 		"name": "convert",
-		"path": "/ui/init", // Nextcloud API automatically appends .js
+		"path": "ui/init", // Nextcloud API automatically appends .js
 	}
 
 	body, err := json.Marshal(payload)
@@ -499,6 +513,32 @@ func registerScript(cfg Config) error {
 	}
 
 	endpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/apps/app_api/api/v1/ui/script")
+	if err != nil {
+		return err
+	}
+
+	return postOCSJSON(cfg, endpoint, body, true)
+}
+
+// registerStyle registers the CSS file for the AppAPI embedded top-menu page.
+// AppAPI expects paths relative to the ExApp root, without the .css suffix.
+func registerStyle(cfg Config) error {
+	if cfg.NextcloudURL == "" || cfg.AppID == "" {
+		return errors.New("NEXTCLOUD_URL / APP_ID are required")
+	}
+
+	payload := map[string]any{
+		"type": "top_menu",
+		"name": "convert",
+		"path": "ui/style",
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	endpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/apps/app_api/api/v1/ui/style")
 	if err != nil {
 		return err
 	}
@@ -635,24 +675,10 @@ func makeInitJSHandler(cfg Config) http.HandlerFunc {
   var el = document.getElementById('content');
   if (!el) return;
 
-  function getHeaderHeight() {
-    var header = document.getElementById('header') || document.querySelector('header');
-    if (!header) return 50;
-    var rect = header.getBoundingClientRect();
-    return Math.max(50, Math.ceil(rect.height || 0));
-  }
-
-  var headerHeight = getHeaderHeight();
-  var currentTop = Math.max(0, Math.round(el.getBoundingClientRect().top || 0));
-  var topOffset = Math.max(0, headerHeight - currentTop);
-  var occupiedTop = currentTop + topOffset;
-
   el.style.width = '100%';
-  el.style.height = 'calc(100vh - ' + occupiedTop + 'px)';
-  el.style.minHeight = '0';
+  el.style.minHeight = '100%';
   el.style.padding = '0';
   el.style.margin = '0';
-  el.style.marginTop = topOffset + 'px';
   el.style.boxSizing = 'border-box';
   el.style.borderRadius = '0';
   el.style.boxShadow = 'none';
@@ -669,16 +695,6 @@ func makeInitJSHandler(cfg Config) http.HandlerFunc {
   var nonce = '';
   var nonceSource = document.querySelector('script[nonce]');
   if (nonceSource) nonce = nonceSource.getAttribute('nonce') || '';
-
-  function loadStylesheet(href) {
-    var old = document.getElementById('video-converter-style');
-    if (old) old.remove();
-    var link = document.createElement('link');
-    link.id = 'video-converter-style';
-    link.rel = 'stylesheet';
-    link.href = href;
-    document.head.appendChild(link);
-  }
 
   function loadScript(src) {
     var old = document.getElementById('video-converter-app');
@@ -701,7 +717,6 @@ func makeInitJSHandler(cfg Config) http.HandlerFunc {
     window.__PROXY_BASE__ = proxyBase;
     el.replaceChildren.apply(el, Array.prototype.slice.call(doc.body.childNodes));
     var bust = Date.now().toString();
-    loadStylesheet(proxyBase + '/ui/style.css?v=' + bust);
     loadScript(proxyBase + '/ui/app.js?v=' + bust);
   }).catch(function(error) {
     el.innerHTML = '<div class="emptycontent"><div class="icon-error"></div><h2>Video Converter</h2><p>Не удалось загрузить интерфейс приложения.</p><p>' + String(error.message || error) + '</p></div>';
@@ -1450,18 +1465,23 @@ func probeMedia(ctx context.Context, path string) (MediaInfo, error) {
 
 	var data struct {
 		Format struct {
-			Duration string `json:"duration"`
+			Duration   string `json:"duration"`
+			FormatName string `json:"format_name"`
 		} `json:"format"`
 		Streams []struct {
-			CodecType      string            `json:"codec_type"`
-			ColorTransfer  string            `json:"color_transfer"`
-			ColorPrimaries string            `json:"color_primaries"`
-			ColorSpace     string            `json:"color_space"`
-			Width          int               `json:"width"`
-			Height         int               `json:"height"`
-			PixFmt         string            `json:"pix_fmt"`
-			Duration       string            `json:"duration"`
-			Tags           map[string]string `json:"tags"`
+			CodecType        string            `json:"codec_type"`
+			CodecName        string            `json:"codec_name"`
+			ColorTransfer    string            `json:"color_transfer"`
+			ColorPrimaries   string            `json:"color_primaries"`
+			ColorSpace       string            `json:"color_space"`
+			Width            int               `json:"width"`
+			Height           int               `json:"height"`
+			PixFmt           string            `json:"pix_fmt"`
+			BitsPerRawSample string            `json:"bits_per_raw_sample"`
+			AvgFrameRate     string            `json:"avg_frame_rate"`
+			RFrameRate       string            `json:"r_frame_rate"`
+			Duration         string            `json:"duration"`
+			Tags             map[string]string `json:"tags"`
 		} `json:"streams"`
 	}
 
@@ -1471,11 +1491,21 @@ func probeMedia(ctx context.Context, path string) (MediaInfo, error) {
 	if d, err := strconv.ParseFloat(data.Format.Duration, 64); err == nil {
 		info.DurationSeconds = d
 	}
+	info.Container = data.Format.FormatName
 
 	for _, s := range data.Streams {
+		if s.CodecType == "audio" && info.AudioCodec == "" {
+			info.AudioCodec = s.CodecName
+			continue
+		}
+		if s.CodecType == "subtitle" {
+			info.HasSubtitles = true
+			continue
+		}
 		if s.CodecType != "video" {
 			continue
 		}
+		info.VideoCodec = s.CodecName
 		if info.DurationSeconds <= 0 {
 			if s.Duration != "" {
 				if d, err := strconv.ParseFloat(s.Duration, 64); err == nil {
@@ -1491,6 +1521,11 @@ func probeMedia(ctx context.Context, path string) (MediaInfo, error) {
 		info.PixelFormat = s.PixFmt
 		info.Width = s.Width
 		info.Height = s.Height
+		info.FPS = formatFrameRate(s.AvgFrameRate)
+		if info.FPS == "" {
+			info.FPS = formatFrameRate(s.RFrameRate)
+		}
+		info.BitDepth = bitDepthFromPixelFormat(s.PixFmt, s.BitsPerRawSample)
 
 		t := strings.ToLower(s.ColorTransfer)
 		p := strings.ToLower(s.ColorPrimaries)
@@ -1948,6 +1983,48 @@ func parseTime(s string) float64 {
 	return 0
 }
 
+func formatFrameRate(rate string) string {
+	if rate == "" || rate == "0/0" {
+		return ""
+	}
+	numStr, denStr, ok := strings.Cut(rate, "/")
+	if !ok {
+		return rate
+	}
+	num, err1 := strconv.ParseFloat(numStr, 64)
+	den, err2 := strconv.ParseFloat(denStr, 64)
+	if err1 != nil || err2 != nil || den == 0 {
+		return ""
+	}
+	fps := num / den
+	if fps <= 0 {
+		return ""
+	}
+	if fps == float64(int64(fps)) {
+		return strconv.FormatInt(int64(fps), 10)
+	}
+	return strconv.FormatFloat(fps, 'f', 2, 64)
+}
+
+func bitDepthFromPixelFormat(pixFmt, rawBits string) string {
+	if rawBits != "" && rawBits != "0" {
+		return rawBits + " bit"
+	}
+	pixFmt = strings.ToLower(pixFmt)
+	switch {
+	case strings.Contains(pixFmt, "12"):
+		return "12 bit"
+	case strings.Contains(pixFmt, "10"):
+		return "10 bit"
+	case strings.Contains(pixFmt, "9"):
+		return "9 bit"
+	case pixFmt != "":
+		return "8 bit"
+	default:
+		return ""
+	}
+}
+
 func probeRemoteMedia(ctx context.Context, cfg Config, cookie, appAPIAuth, remotePath string) (MediaInfo, error) {
 	var info MediaInfo
 	u, err := buildWebDAVURL(cfg, remotePath)
@@ -1983,21 +2060,25 @@ func probeRemoteMedia(ctx context.Context, cfg Config, cookie, appAPIAuth, remot
 
 	var data struct {
 		Format struct {
-			Duration string `json:"duration"`
-			Size     string `json:"size"`
-			BitRate  string `json:"bit_rate"`
+			Duration   string `json:"duration"`
+			Size       string `json:"size"`
+			BitRate    string `json:"bit_rate"`
+			FormatName string `json:"format_name"`
 		} `json:"format"`
 		Streams []struct {
-			CodecType      string            `json:"codec_type"`
-			CodecName      string            `json:"codec_name"`
-			ColorTransfer  string            `json:"color_transfer"`
-			ColorPrimaries string            `json:"color_primaries"`
-			ColorSpace     string            `json:"color_space"`
-			Width          int               `json:"width"`
-			Height         int               `json:"height"`
-			PixFmt         string            `json:"pix_fmt"`
-			Duration       string            `json:"duration"`
-			Tags           map[string]string `json:"tags"`
+			CodecType        string            `json:"codec_type"`
+			CodecName        string            `json:"codec_name"`
+			ColorTransfer    string            `json:"color_transfer"`
+			ColorPrimaries   string            `json:"color_primaries"`
+			ColorSpace       string            `json:"color_space"`
+			Width            int               `json:"width"`
+			Height           int               `json:"height"`
+			PixFmt           string            `json:"pix_fmt"`
+			BitsPerRawSample string            `json:"bits_per_raw_sample"`
+			AvgFrameRate     string            `json:"avg_frame_rate"`
+			RFrameRate       string            `json:"r_frame_rate"`
+			Duration         string            `json:"duration"`
+			Tags             map[string]string `json:"tags"`
 		} `json:"streams"`
 	}
 
@@ -2014,10 +2095,16 @@ func probeRemoteMedia(ctx context.Context, cfg Config, cookie, appAPIAuth, remot
 	if b, err := strconv.Atoi(data.Format.BitRate); err == nil {
 		info.Bitrate = b
 	}
+	info.Container = data.Format.FormatName
 
 	for _, s := range data.Streams {
 		if s.CodecType == "audio" && info.AudioCodec == "" {
 			info.AudioCodec = s.CodecName
+			continue
+		}
+		if s.CodecType == "subtitle" {
+			info.HasSubtitles = true
+			continue
 		}
 		if s.CodecType != "video" {
 			continue
@@ -2040,6 +2127,11 @@ func probeRemoteMedia(ctx context.Context, cfg Config, cookie, appAPIAuth, remot
 		info.PixelFormat = s.PixFmt
 		info.Width = s.Width
 		info.Height = s.Height
+		info.FPS = formatFrameRate(s.AvgFrameRate)
+		if info.FPS == "" {
+			info.FPS = formatFrameRate(s.RFrameRate)
+		}
+		info.BitDepth = bitDepthFromPixelFormat(s.PixFmt, s.BitsPerRawSample)
 
 		t := strings.ToLower(s.ColorTransfer)
 		p := strings.ToLower(s.ColorPrimaries)
