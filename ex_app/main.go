@@ -112,6 +112,7 @@ type ConversionRequest struct {
 	Tonemap      string `json:"tonemap"`
 
 	Cookie       string `json:"-"` // Used for Nextcloud session authentication
+	AppAPIAuth   string `json:"-"` // User-scoped AppAPI credential for background WebDAV requests
 	RequestToken string `json:"requesttoken"`
 	UserID       string `json:"user_id"`
 }
@@ -773,6 +774,7 @@ func makeConvertHandler(cfg Config) http.HandlerFunc {
 
 		// Save the user's session cookie for WebDAV authentication
 		req.Cookie = r.Header.Get("Cookie")
+		req.AppAPIAuth = r.Header.Get("AUTHORIZATION-APP-API")
 
 		if err := validateRequest(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -811,8 +813,9 @@ func makeMetadataHandler(cfg Config) http.HandlerFunc {
 		}
 
 		cookie := r.Header.Get("Cookie")
+		appAPIAuth := r.Header.Get("AUTHORIZATION-APP-API")
 
-		info, err := probeRemoteMedia(r.Context(), cfg, cookie, req.FilePath)
+		info, err := probeRemoteMedia(r.Context(), cfg, cookie, appAPIAuth, req.FilePath)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
@@ -992,7 +995,7 @@ func processTask(cfg Config, taskID string, req ConversionRequest) {
 	inFile.Close()
 	defer os.Remove(inPath)
 
-	if err := downloadWebDAV(ctx, client, cfg, req.Cookie, req.FilePath, inPath, taskID); err != nil {
+	if err := downloadWebDAV(ctx, client, cfg, req.Cookie, req.AppAPIAuth, req.FilePath, inPath, taskID); err != nil {
 		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "context canceled") {
 			setTaskError(taskID, "Отменено пользователем")
 		} else {
@@ -1036,7 +1039,7 @@ func processTask(cfg Config, taskID string, req ConversionRequest) {
 
 	setTaskStatus(taskID, "Загрузка", "Сохранение готового файла в облако...", 90)
 	remoteOut := buildRemoteOutputPath(req.FilePath, req.FileName, req.Container)
-	if err := uploadWebDAV(ctx, client, cfg, req.Cookie, req.RequestToken, remoteOut, outPath); err != nil {
+	if err := uploadWebDAV(ctx, client, cfg, req.Cookie, req.AppAPIAuth, req.RequestToken, remoteOut, outPath); err != nil {
 		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "context canceled") {
 			setTaskError(taskID, "Отменено пользователем")
 		} else {
@@ -1047,7 +1050,7 @@ func processTask(cfg Config, taskID string, req ConversionRequest) {
 
 	if req.DeleteOriginal {
 		setTaskStatus(taskID, "Завершение", "Удаление оригинала", 99)
-		if err := deleteWebDAV(ctx, client, cfg, req.Cookie, req.RequestToken, req.FilePath); err != nil {
+		if err := deleteWebDAV(ctx, client, cfg, req.Cookie, req.AppAPIAuth, req.RequestToken, req.FilePath); err != nil {
 			setTaskError(taskID, "delete original failed: "+err.Error())
 			return
 		}
@@ -1479,7 +1482,7 @@ func probeMedia(ctx context.Context, path string) (MediaInfo, error) {
 	return info, nil
 }
 
-func downloadWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, remotePath, localPath string, taskID string) error {
+func downloadWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, appAPIAuth, remotePath, localPath string, taskID string) error {
 	u, err := buildWebDAVURL(cfg, remotePath)
 	if err != nil {
 		return err
@@ -1489,7 +1492,9 @@ func downloadWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie
 	if err != nil {
 		return err
 	}
-	if cookie != "" {
+	if appAPIAuth != "" {
+		setAppAPIRequestHeaders(req, cfg, appAPIAuth)
+	} else if cookie != "" {
 		req.Header.Set("Cookie", cookie)
 	} else if cfg.NextcloudUser != "" && cfg.NextcloudPass != "" {
 		req.SetBasicAuth(cfg.NextcloudUser, cfg.NextcloudPass)
@@ -1557,7 +1562,7 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func uploadWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, requestToken, remotePath, localPath string) error {
+func uploadWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, appAPIAuth, requestToken, remotePath, localPath string) error {
 	u, err := buildWebDAVURL(cfg, remotePath)
 	if err != nil {
 		return err
@@ -1573,7 +1578,9 @@ func uploadWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, 
 	if err != nil {
 		return err
 	}
-	if cookie != "" {
+	if appAPIAuth != "" {
+		setAppAPIRequestHeaders(req, cfg, appAPIAuth)
+	} else if cookie != "" {
 		req.Header.Set("Cookie", cookie)
 		if requestToken != "" {
 			req.Header.Set("requesttoken", requestToken)
@@ -1596,7 +1603,7 @@ func uploadWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, 
 	return nil
 }
 
-func deleteWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, requestToken, remotePath string) error {
+func deleteWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, appAPIAuth, requestToken, remotePath string) error {
 	u, err := buildWebDAVURL(cfg, remotePath)
 	if err != nil {
 		return err
@@ -1606,7 +1613,9 @@ func deleteWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, 
 	if err != nil {
 		return err
 	}
-	if cookie != "" {
+	if appAPIAuth != "" {
+		setAppAPIRequestHeaders(req, cfg, appAPIAuth)
+	} else if cookie != "" {
 		req.Header.Set("Cookie", cookie)
 		if requestToken != "" {
 			req.Header.Set("requesttoken", requestToken)
@@ -1723,8 +1732,16 @@ func buildWebDAVURL(cfg Config, remotePath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	u.Path = strings.TrimSuffix(strings.TrimRight(u.Path, "/"), "/index.php")
 	u.Path = joinURLPath(u.Path, fullPath)
 	return u.String(), nil
+}
+
+func setAppAPIRequestHeaders(req *http.Request, cfg Config, authValue string) {
+	req.Header.Set("AA-VERSION", cfg.AAVersion)
+	req.Header.Set("EX-APP-ID", cfg.AppID)
+	req.Header.Set("EX-APP-VERSION", cfg.AppVersion)
+	req.Header.Set("AUTHORIZATION-APP-API", authValue)
 }
 
 func joinURLPath(base, add string) string {
@@ -1910,7 +1927,7 @@ func parseTime(s string) float64 {
 	return 0
 }
 
-func probeRemoteMedia(ctx context.Context, cfg Config, cookie, remotePath string) (MediaInfo, error) {
+func probeRemoteMedia(ctx context.Context, cfg Config, cookie, appAPIAuth, remotePath string) (MediaInfo, error) {
 	var info MediaInfo
 	u, err := buildWebDAVURL(cfg, remotePath)
 	if err != nil {
@@ -1919,7 +1936,16 @@ func probeRemoteMedia(ctx context.Context, cfg Config, cookie, remotePath string
 
 	args := []string{"-v", "quiet", "-print_format", "json", "-show_format", "-show_streams"}
 
-	if cookie != "" {
+	if appAPIAuth != "" {
+		headers := strings.Join([]string{
+			"AA-VERSION: " + cfg.AAVersion,
+			"EX-APP-ID: " + cfg.AppID,
+			"EX-APP-VERSION: " + cfg.AppVersion,
+			"AUTHORIZATION-APP-API: " + appAPIAuth,
+			"",
+		}, "\r\n")
+		args = append(args, "-headers", headers)
+	} else if cookie != "" {
 		args = append(args, "-headers", "Cookie: "+cookie+"\r\n")
 	} else if cfg.NextcloudUser != "" && cfg.NextcloudPass != "" {
 		args = append(args, "-headers", "Authorization: Basic "+base64.StdEncoding.EncodeToString([]byte(cfg.NextcloudUser+":"+cfg.NextcloudPass))+"\r\n")

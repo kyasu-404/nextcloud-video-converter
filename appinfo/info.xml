@@ -5,7 +5,7 @@
   <name>Video Converter</name>
   <summary>Convert videos from the Files menu</summary>
   <description>ExApp backend for ffmpeg conversion with WebDAV upload back to Nextcloud.</description>
-  <version>1.0.4</version>
+  <version>1.0.5</version>
   <licence>Apache 2.0</licence>
   <author>kyasu-404</author>
   <category>multimedia</category>
@@ -16,7 +16,7 @@
     <docker-install>
       <registry>ghcr.io</registry>
       <image>kyasu-404/nextcloud-video-converter</image>
-      <image-tag>1.0.4</image-tag>
+      <image-tag>1.0.5</image-tag>
     </docker-install>
 
     <routes>
