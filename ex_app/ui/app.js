@@ -264,7 +264,9 @@ async function pollTask(taskId) {
     }
     const task = await res.json();
     const parts = [`${task.status}`];
-    if (typeof task.progress === 'number') parts.push(`${task.progress}%`);
+    if (typeof task.progress === 'number' && !(task.message || '').includes(`${task.progress}%`)) {
+      parts.push(`${task.progress}%`);
+    }
     if (task.message) parts.push(task.message);
     setStatus(parts.join(' · '), task.status, task.progress);
 

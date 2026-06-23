@@ -635,11 +635,25 @@ func makeInitJSHandler(cfg Config) http.HandlerFunc {
   var el = document.getElementById('content');
   if (!el) return;
 
+  function getHeaderHeight() {
+    var header = document.getElementById('header') || document.querySelector('header');
+    if (!header) return 50;
+    var rect = header.getBoundingClientRect();
+    return Math.max(50, Math.ceil(rect.height || 0));
+  }
+
+  var headerHeight = getHeaderHeight();
+  var currentTop = Math.max(0, Math.round(el.getBoundingClientRect().top || 0));
+  var topOffset = Math.max(0, headerHeight - currentTop);
+  var occupiedTop = currentTop + topOffset;
+
   el.style.width = '100%';
-  el.style.height = 'calc(100vh - var(--header-height, 50px))';
+  el.style.height = 'calc(100vh - ' + occupiedTop + 'px)';
   el.style.minHeight = '0';
   el.style.padding = '0';
   el.style.margin = '0';
+  el.style.marginTop = topOffset + 'px';
+  el.style.boxSizing = 'border-box';
   el.style.borderRadius = '0';
   el.style.boxShadow = 'none';
   el.style.background = 'var(--color-main-background)';
@@ -1563,7 +1577,7 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 		}
 		if pct > pr.lastPct {
 			pr.lastPct = pct
-			setTaskStatus(pr.taskID, "Скачивание", fmt.Sprintf("Загрузка файла... %d%%", pct), pct)
+			setTaskStatus(pr.taskID, "Скачивание", "Загрузка файла...", pct)
 		}
 	}
 	return n, err
