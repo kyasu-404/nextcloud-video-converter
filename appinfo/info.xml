@@ -12,9 +12,6 @@
   <dependencies>
     <nextcloud min-version="31"/>
   </dependencies>
-  <port>8080</port>
-  <secret>video_converter_secret_12345</secret>
-
   <external-app>
     <docker-install>
       <registry>ghcr.io</registry>
