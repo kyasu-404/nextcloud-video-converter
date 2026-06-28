@@ -141,6 +141,7 @@ type MediaInfo struct {
 	Height          int
 	VideoCodec      string
 	AudioCodec      string
+	AudioBitrate    int
 	Bitrate         int
 	Size            int64
 }
@@ -1359,6 +1360,18 @@ func buildFFmpegArgs(req ConversionRequest, info MediaInfo, inPath, outPath stri
 		if req.AudioBitrate != "" {
 			args = append(args, "-b:a", req.AudioBitrate+"k")
 		}
+	case "opus":
+		args = append(args, "-c:a", "libopus")
+		if req.AudioBitrate != "" {
+			args = append(args, "-b:a", req.AudioBitrate+"k")
+		}
+	case "mp3":
+		args = append(args, "-c:a", "libmp3lame")
+		if req.AudioBitrate != "" {
+			args = append(args, "-b:a", req.AudioBitrate+"k")
+		}
+	case "flac":
+		args = append(args, "-c:a", "flac")
 	default:
 		return nil, errors.New("unsupported audio codec")
 	}
@@ -1481,6 +1494,7 @@ func probeMedia(ctx context.Context, path string) (MediaInfo, error) {
 			AvgFrameRate     string            `json:"avg_frame_rate"`
 			RFrameRate       string            `json:"r_frame_rate"`
 			Duration         string            `json:"duration"`
+			BitRate          string            `json:"bit_rate"`
 			Tags             map[string]string `json:"tags"`
 		} `json:"streams"`
 	}
@@ -1495,6 +1509,9 @@ func probeMedia(ctx context.Context, path string) (MediaInfo, error) {
 	for _, s := range data.Streams {
 		if s.CodecType == "audio" && info.AudioCodec == "" {
 			info.AudioCodec = s.CodecName
+			if b, err := strconv.Atoi(s.BitRate); err == nil {
+				info.AudioBitrate = b
+			}
 			continue
 		}
 		if s.CodecType == "subtitle" {
@@ -2076,6 +2093,7 @@ func probeRemoteMedia(ctx context.Context, cfg Config, cookie, appAPIAuth, remot
 			AvgFrameRate     string            `json:"avg_frame_rate"`
 			RFrameRate       string            `json:"r_frame_rate"`
 			Duration         string            `json:"duration"`
+			BitRate          string            `json:"bit_rate"`
 			Tags             map[string]string `json:"tags"`
 		} `json:"streams"`
 	}
@@ -2097,6 +2115,9 @@ func probeRemoteMedia(ctx context.Context, cfg Config, cookie, appAPIAuth, remot
 	for _, s := range data.Streams {
 		if s.CodecType == "audio" && info.AudioCodec == "" {
 			info.AudioCodec = s.CodecName
+			if b, err := strconv.Atoi(s.BitRate); err == nil {
+				info.AudioBitrate = b
+			}
 			continue
 		}
 		if s.CodecType == "subtitle" {

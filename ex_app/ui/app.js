@@ -18,6 +18,7 @@ const allowNotifBtn = document.getElementById('allowNotifBtn');
 
 let mediaDuration = 0;
 let isHDR = false;
+let sourceAudioBitrateKbps = 0;
 const VIDEO_MIME_TYPES = [
   'video/mp4',
   'video/x-m4v',
@@ -158,13 +159,20 @@ qualityCrfSelect.addEventListener('change', () => {
 });
 
 document.getElementById('custom_bitrate').addEventListener('input', updateEstSize);
+document.getElementById('audio_bitrate').addEventListener('change', updateEstSize);
+document.getElementById('audio_codec').addEventListener('change', updateEstSize);
 
 function updateEstSize() {
   if (qualityTypeSelect.value === 'bitrate' && mediaDuration > 0) {
-    const kbps = parseInt(document.getElementById('custom_bitrate').value, 10);
-    if (!isNaN(kbps) && kbps > 0) {
-      // kbps to bytes: kbps * 1000 / 8 * duration
-      const estBytes = (kbps * 1000 / 8) * mediaDuration;
+    const videoKbps = parseInt(document.getElementById('custom_bitrate').value, 10);
+    if (!isNaN(videoKbps) && videoKbps > 0) {
+      const selectedAudioKbps = parseInt(document.getElementById('audio_bitrate').value, 10);
+      const audioCodec = document.getElementById('audio_codec').value;
+      const audioKbps = !isNaN(selectedAudioKbps) && selectedAudioKbps > 0
+        ? selectedAudioKbps
+        : (audioCodec === 'copy' ? sourceAudioBitrateKbps : 0);
+      // kbps to bytes: total kbps * 1000 / 8 * duration
+      const estBytes = ((videoKbps + audioKbps) * 1000 / 8) * mediaDuration;
       document.getElementById('est_size_val').textContent = formatBytes(estBytes);
       document.getElementById('est_size_status').style.display = 'block';
       return;
@@ -200,6 +208,7 @@ async function fetchMetadata(filePath) {
   metaContent.style.display = 'none';
   isHDR = false;
   mediaDuration = 0;
+  sourceAudioBitrateKbps = 0;
 
   try {
     const res = await fetch(`${BASE}/api/metadata`, {
@@ -223,9 +232,11 @@ async function fetchMetadata(filePath) {
     
     isHDR = data.IsHDR;
     mediaDuration = data.DurationSeconds || 0;
+    sourceAudioBitrateKbps = data.AudioBitrate ? Math.round(data.AudioBitrate / 1000) : 0;
 
     // Trigger change to show/hide tonemap if default is SDR
     hdrModeSelect.dispatchEvent(new Event('change'));
+    updateEstSize();
 
     metaLoad.style.display = 'none';
     metaContent.style.display = 'block';
