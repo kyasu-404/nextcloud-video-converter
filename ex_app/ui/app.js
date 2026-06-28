@@ -18,6 +18,21 @@ const allowNotifBtn = document.getElementById('allowNotifBtn');
 
 let mediaDuration = 0;
 let isHDR = false;
+const VIDEO_MIME_TYPES = [
+  'video/mp4',
+  'video/x-m4v',
+  'video/quicktime',
+  'video/x-matroska',
+  'video/webm',
+  'video/x-msvideo',
+  'video/x-ms-wmv',
+  'video/mpeg',
+  'video/ogg',
+  'video/3gpp',
+  'video/3gpp2',
+  'video/mp2t',
+  'video/x-flv',
+];
 
 // ── Notification permission banner ──
 function updateNotifBanner() {
@@ -230,30 +245,103 @@ if (!value('file_id') || value('file_id') === '{{FILE_ID}}') {
 
 if (pickFileBtn) {
   pickFileBtn.addEventListener('click', () => {
+    if (openVideoFilePickerBuilder()) {
+      return;
+    }
     if (window.parent && window.parent.OC && window.parent.OC.dialogs) {
-      window.parent.OC.dialogs.filepicker('Выберите видео для конвертации', function(path) {
-        if (Array.isArray(path)) path = path[0];
-        if (!path) return;
-
-        const fileName = path.split('/').pop();
-
-        document.getElementById('file_id').value = 'picked';
-        document.getElementById('file_path').value = path;
-        document.getElementById('file_name').value = fileName;
-
-        document.getElementById('display_id').textContent = 'picked';
-        document.getElementById('display_path').textContent = path;
-        document.getElementById('display_name').textContent = fileName;
-
-        contentWrap.style.display = 'grid';
-        fileboxEmpty.style.display = 'none';
-        
-        fetchMetadata(path);
-      });
+      window.parent.OC.dialogs.filepicker(
+        'Выберите видео для конвертации',
+        selectPickedVideo,
+        false,
+        VIDEO_MIME_TYPES,
+        true
+      );
     } else {
       alert('Ошибка: API выбора файлов Nextcloud недоступно.');
     }
   });
+}
+
+function openVideoFilePickerBuilder() {
+  const builderFactory = nextcloudFilePickerBuilderFactory();
+  if (typeof builderFactory !== 'function') {
+    return false;
+  }
+
+  try {
+    const builder = builderFactory(pickFileBtn?.textContent || 'Video');
+    VIDEO_MIME_TYPES.forEach((mimetype) => builder.addMimeTypeFilter?.(mimetype));
+    builder.setFilter?.((node) => isVideoPickerNode(node, { allowDirectories: true }));
+    builder.setCanPick?.((node) => isVideoPickerNode(node, { allowDirectories: false }));
+    builder.allowDirectories?.(false);
+    builder.setMultiSelect?.(false);
+    builder.setType?.(1);
+    builder.build().pick()
+      .then(selectPickedVideo)
+      .catch(() => {});
+    return true;
+  } catch (err) {
+    console.warn('Nextcloud file picker builder failed:', err);
+    return false;
+  }
+}
+
+function nextcloudFilePickerBuilderFactory() {
+  const factories = [];
+  try {
+    factories.push(window.parent?.OC?.dialogs?.getFilePickerBuilder);
+    factories.push(window.parent?.OCP?.Files?.getFilePickerBuilder);
+    factories.push(window.parent?.getFilePickerBuilder);
+  } catch (_error) {
+    // Fall through to same-window candidates.
+  }
+  factories.push(window.OC?.dialogs?.getFilePickerBuilder);
+  factories.push(window.OCP?.Files?.getFilePickerBuilder);
+  factories.push(window.getFilePickerBuilder);
+  return factories.find((factory) => typeof factory === 'function') || null;
+}
+
+function isVideoPickerNode(node, { allowDirectories }) {
+  if (isPickerDirectory(node)) {
+    return Boolean(allowDirectories);
+  }
+  return VIDEO_MIME_TYPES.includes(normalizeMimeType(node?.mime || node?.mimetype || node?.mimeType || ''));
+}
+
+function isPickerDirectory(node) {
+  const type = String(node?.type || '').toLowerCase();
+  const mime = normalizeMimeType(node?.mime || node?.mimetype || node?.mimeType || '');
+  return node?.is_dir === true
+    || node?.isDirectory === true
+    || node?.isFolder === true
+    || type === 'dir'
+    || type === 'folder'
+    || mime === 'httpd/unix-directory'
+    || mime === 'inode/directory';
+}
+
+function normalizeMimeType(mimetype) {
+  return String(mimetype || '').split(';', 1)[0].trim().toLowerCase();
+}
+
+function selectPickedVideo(path) {
+  if (Array.isArray(path)) path = path[0];
+  if (!path) return;
+
+  const fileName = path.split('/').pop();
+
+  document.getElementById('file_id').value = 'picked';
+  document.getElementById('file_path').value = path;
+  document.getElementById('file_name').value = fileName;
+
+  document.getElementById('display_id').textContent = 'picked';
+  document.getElementById('display_path').textContent = path;
+  document.getElementById('display_name').textContent = fileName;
+
+  contentWrap.style.display = 'grid';
+  fileboxEmpty.style.display = 'none';
+
+  fetchMetadata(path);
 }
 
 async function pollTask(taskId) {

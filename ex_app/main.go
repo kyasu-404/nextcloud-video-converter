@@ -674,15 +674,17 @@ func makeInitJSHandler(cfg Config) http.HandlerFunc {
   var el = document.getElementById('content');
   if (!el) return;
 
-  el.style.width = '100%';
-  el.style.minHeight = '100%';
+  el.style.width = 'auto';
+  el.style.height = 'auto';
+  el.style.minWidth = '0';
+  el.style.minHeight = '0';
   el.style.padding = '0';
   el.style.margin = '0';
   el.style.boxSizing = 'border-box';
-  el.style.borderRadius = '0';
+  el.style.borderRadius = 'var(--body-container-radius, var(--border-radius-large, 12px))';
   el.style.boxShadow = 'none';
-  el.style.background = 'var(--color-main-background)';
-  el.style.overflow = 'auto';
+  el.style.background = 'var(--color-background-dark, #f5f7fa)';
+  el.style.overflow = 'hidden';
   el.classList.add('app-video-converter-content');
 
   var proxyBase = window.OC.generateUrl('/apps/app_api/proxy/' + appId);
