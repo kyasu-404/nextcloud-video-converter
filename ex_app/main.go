@@ -48,6 +48,8 @@ var (
 	globalAppAPIAuth string
 	globalAppAPIUser string
 	globalAuthMutex  sync.RWMutex
+
+	adminSettingsRefreshOnce sync.Once
 )
 
 const (
@@ -71,6 +73,7 @@ const (
 	defaultCPULimitPercent          = 50
 	defaultThreadsPerJob            = 0
 	settingsCacheDuration           = 5 * time.Second
+	adminSettingsRefreshInterval    = 1 * time.Minute
 )
 
 func updateAppAPIAuth(auth, userID string) {
@@ -259,6 +262,7 @@ func main() {
 			} else {
 				log.Println("Admin settings registered")
 			}
+			startAdminSettingsRefreshLoop(cfg)
 			if err := registerTopMenu(cfg); err != nil {
 				log.Printf("Ошибка регистрации Top Menu: %v", err)
 			} else {
@@ -496,6 +500,7 @@ func makeEnabledHandler(cfg Config) http.HandlerFunc {
 				} else {
 					log.Println("Admin settings registered")
 				}
+				startAdminSettingsRefreshLoop(cfg)
 				if err := registerTopMenu(cfg); err != nil {
 					log.Printf("Ошибка регистрации Top Menu: %v", err)
 				} else {
@@ -652,6 +657,9 @@ func registerDeclarativeAdminSettings(cfg Config) error {
 
 	ctx := context.Background()
 	authValue := getAppAPIAuth()
+	if err := normalizeAllowedGroupsConfig(ctx, cfg, authValue); err != nil {
+		log.Printf("allowed groups config normalization failed: %v", err)
+	}
 	groupOptions, err := fetchGroupOptions(ctx, cfg, authValue)
 	if err != nil {
 		log.Printf("group list fetch failed with current AppAPI auth: %v", err)
@@ -670,7 +678,7 @@ func registerDeclarativeAdminSettings(cfg Config) error {
 	forms := []map[string]any{
 		{
 			"id":           accessSettingsFormID,
-			"priority":     40,
+			"priority":     30,
 			"section_type": "admin",
 			"section_id":   "declarative_settings",
 			"title":        "Access",
@@ -681,7 +689,7 @@ func registerDeclarativeAdminSettings(cfg Config) error {
 					"id":          allowedGroupsKey,
 					"title":       "Allowed groups",
 					"type":        "multi-select",
-					"default":     "",
+					"default":     []string{},
 					"description": "Leave empty to allow all users. Select one or more existing Nextcloud groups.",
 					"placeholder": "Select groups",
 					"label":       "",
@@ -693,7 +701,7 @@ func registerDeclarativeAdminSettings(cfg Config) error {
 		},
 		{
 			"id":           queueSettingsFormID,
-			"priority":     50,
+			"priority":     40,
 			"section_type": "admin",
 			"section_id":   "declarative_settings",
 			"title":        "Queue & limits",
@@ -708,7 +716,7 @@ func registerDeclarativeAdminSettings(cfg Config) error {
 		},
 		{
 			"id":           ffmpegSettingsFormID,
-			"priority":     60,
+			"priority":     50,
 			"section_type": "admin",
 			"section_id":   "declarative_settings",
 			"title":        "FFmpeg performance",
@@ -727,6 +735,22 @@ func registerDeclarativeAdminSettings(cfg Config) error {
 		}
 	}
 	return nil
+}
+
+func startAdminSettingsRefreshLoop(cfg Config) {
+	adminSettingsRefreshOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(adminSettingsRefreshInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				if err := registerDeclarativeAdminSettings(cfg); err != nil {
+					log.Printf("admin settings refresh failed: %v", err)
+				} else {
+					log.Println("Admin settings refreshed")
+				}
+			}
+		}()
+	})
 }
 
 func numberSettingsField(id, title string, defaultValue int, description string) map[string]any {
@@ -2142,6 +2166,56 @@ func getAppConfigValues(ctx context.Context, cfg Config, keys []string, authValu
 		}
 	}
 	return values, nil
+}
+
+func setAppConfigValue(ctx context.Context, cfg Config, key string, value any, authValue string) error {
+	body, err := json.Marshal(map[string]any{
+		"configKey":   key,
+		"configValue": value,
+	})
+	if err != nil {
+		return err
+	}
+
+	endpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/apps/app_api/api/v1/ex-app/config")
+	if err != nil {
+		return err
+	}
+
+	_, err = postOCSJSONResponse(ctx, cfg, endpoint, body, authValue)
+	return err
+}
+
+func normalizeAllowedGroupsConfig(ctx context.Context, cfg Config, authValue string) error {
+	values, err := getAppConfigValues(ctx, cfg, []string{allowedGroupsKey}, authValue)
+	if err != nil {
+		return err
+	}
+	raw, ok := values[allowedGroupsKey]
+	if !ok {
+		return nil
+	}
+
+	rawString, ok := raw.(string)
+	if !ok {
+		return nil
+	}
+	rawString = strings.TrimSpace(rawString)
+	if rawString == "" {
+		return nil
+	}
+
+	var decoded []string
+	if strings.HasPrefix(rawString, "[") && json.Unmarshal([]byte(rawString), &decoded) == nil {
+		return nil
+	}
+
+	groups := parseAllowedGroupsValue(rawString)
+	normalized, err := json.Marshal(groups)
+	if err != nil {
+		return err
+	}
+	return setAppConfigValue(ctx, cfg, allowedGroupsKey, string(normalized), authValue)
 }
 
 func postOCSJSONResponse(ctx context.Context, cfg Config, endpoint string, body []byte, authValue string) ([]byte, error) {
