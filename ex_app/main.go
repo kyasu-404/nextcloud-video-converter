@@ -51,8 +51,12 @@ var (
 )
 
 const (
-	settingsFormID                  = "video_converter_admin"
+	legacySettingsFormID            = "video_converter_admin"
+	accessSettingsFormID            = "video_converter_access"
+	queueSettingsFormID             = "video_converter_queue_limits"
+	ffmpegSettingsFormID            = "video_converter_ffmpeg_performance"
 	allowedGroupsKey                = "allowed_groups"
+	settingsAdminUserKey            = "settings_admin_user"
 	maxConcurrentJobsKey            = "max_concurrent_jobs"
 	maxConcurrentJobsPerUserKey     = "max_concurrent_jobs_per_user"
 	maxQueuedJobsPerUserKey         = "max_queued_jobs_per_user"
@@ -250,10 +254,10 @@ func main() {
 		go func() {
 			// Даем серверу 2 секунды на полный запуск перед отправкой запроса
 			time.Sleep(2 * time.Second)
-			if err := unregisterDeclarativeAdminSettings(cfg); err != nil {
-				log.Printf("old declarative settings cleanup failed: %v", err)
+			if err := registerDeclarativeAdminSettings(cfg); err != nil {
+				log.Printf("admin settings registration failed: %v", err)
 			} else {
-				log.Println("Old declarative settings cleaned up")
+				log.Println("Admin settings registered")
 			}
 			if err := registerTopMenu(cfg); err != nil {
 				log.Printf("Ошибка регистрации Top Menu: %v", err)
@@ -487,10 +491,10 @@ func makeEnabledHandler(cfg Config) http.HandlerFunc {
 			// AppAPI signals activation — register UI elements.
 			log.Println("/enabled: registering UI elements in Nextcloud")
 			go func() {
-				if err := unregisterDeclarativeAdminSettings(cfg); err != nil {
-					log.Printf("old declarative settings cleanup failed: %v", err)
+				if err := registerDeclarativeAdminSettings(cfg); err != nil {
+					log.Printf("admin settings registration failed: %v", err)
 				} else {
-					log.Println("Old declarative settings cleaned up")
+					log.Println("Admin settings registered")
 				}
 				if err := registerTopMenu(cfg); err != nil {
 					log.Printf("Ошибка регистрации Top Menu: %v", err)
@@ -637,12 +641,123 @@ func registerFilesAction(cfg Config) error {
 	return nil
 }
 
-func unregisterDeclarativeAdminSettings(cfg Config) error {
+func registerDeclarativeAdminSettings(cfg Config) error {
 	if cfg.NextcloudURL == "" || cfg.AppID == "" {
 		return errors.New("NEXTCLOUD_URL / APP_ID are required")
 	}
 
-	body, err := json.Marshal(map[string]any{"formId": settingsFormID})
+	if err := unregisterDeclarativeSettingsForm(cfg, legacySettingsFormID); err != nil {
+		log.Printf("legacy declarative settings cleanup failed: %v", err)
+	}
+
+	ctx := context.Background()
+	authValue := getAppAPIAuth()
+	groupOptions, err := fetchGroupOptions(ctx, cfg, authValue)
+	if err != nil {
+		log.Printf("group list fetch failed with current AppAPI auth: %v", err)
+		if adminUser := getSettingsAdminUser(ctx, cfg, authValue); adminUser != "" {
+			if adminOptions, adminErr := fetchGroupOptions(ctx, cfg, appAPIAuthForUser(cfg, adminUser)); adminErr == nil {
+				groupOptions = adminOptions
+			} else {
+				log.Printf("group list fetch failed with settings_admin_user=%s: %v", adminUser, adminErr)
+				groupOptions = fallbackGroupOptionsFromConfig(ctx, cfg, authValue)
+			}
+		} else {
+			groupOptions = fallbackGroupOptionsFromConfig(ctx, cfg, authValue)
+		}
+	}
+
+	forms := []map[string]any{
+		{
+			"id":           accessSettingsFormID,
+			"priority":     40,
+			"section_type": "admin",
+			"section_id":   "declarative_settings",
+			"title":        "Access",
+			"description":  "Choose which Nextcloud groups can use Video Converter.",
+			"doc_url":      "",
+			"fields": []map[string]any{
+				{
+					"id":          allowedGroupsKey,
+					"title":       "Allowed groups",
+					"type":        "multi-select",
+					"default":     "",
+					"description": "Leave empty to allow all users. Select one or more existing Nextcloud groups.",
+					"placeholder": "Select groups",
+					"label":       "",
+					"notify":      false,
+					"sensitive":   false,
+					"options":     groupOptions,
+				},
+			},
+		},
+		{
+			"id":           queueSettingsFormID,
+			"priority":     50,
+			"section_type": "admin",
+			"section_id":   "declarative_settings",
+			"title":        "Queue & limits",
+			"description":  "Control conversion concurrency and queue depth.",
+			"doc_url":      "",
+			"fields": []map[string]any{
+				numberSettingsField(maxConcurrentJobsKey, "Max concurrent jobs", defaultMaxConcurrentJobs, "Total conversions that can run at the same time."),
+				numberSettingsField(maxConcurrentJobsPerUserKey, "Max concurrent jobs per user", defaultMaxConcurrentJobsPerUser, "Conversions that one user can run at the same time."),
+				numberSettingsField(maxQueuedJobsPerUserKey, "Max queued jobs per user", defaultMaxQueuedJobsPerUser, "Queued conversions allowed per user before new requests are rejected."),
+				numberSettingsField(jobTimeoutMinutesKey, "Job timeout (min)", defaultJobTimeoutMinutes, "Maximum time a job may wait and run before it is cancelled."),
+			},
+		},
+		{
+			"id":           ffmpegSettingsFormID,
+			"priority":     60,
+			"section_type": "admin",
+			"section_id":   "declarative_settings",
+			"title":        "FFmpeg performance",
+			"description":  "Tune FFmpeg CPU and thread usage.",
+			"doc_url":      "",
+			"fields": []map[string]any{
+				numberSettingsField(cpuLimitPercentKey, "CPU limit (%)", defaultCPULimitPercent, "Percent of total container CPU capacity available to FFmpeg."),
+				numberSettingsField(threadsPerJobKey, "Threads per job", defaultThreadsPerJob, "Use 0 to let FFmpeg choose threads without limiting CPU cores."),
+			},
+		},
+	}
+
+	for _, form := range forms {
+		if err := registerDeclarativeSettingsForm(cfg, form); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func numberSettingsField(id, title string, defaultValue int, description string) map[string]any {
+	return map[string]any{
+		"id":          id,
+		"title":       title,
+		"type":        "number",
+		"default":     defaultValue,
+		"description": description,
+		"placeholder": strconv.Itoa(defaultValue),
+		"label":       "",
+		"notify":      false,
+		"sensitive":   false,
+	}
+}
+
+func registerDeclarativeSettingsForm(cfg Config, form map[string]any) error {
+	body, err := json.Marshal(map[string]any{"formScheme": form})
+	if err != nil {
+		return err
+	}
+
+	endpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/apps/app_api/api/v1/ui/settings")
+	if err != nil {
+		return err
+	}
+	return postOCSJSON(cfg, endpoint, body, true)
+}
+
+func unregisterDeclarativeSettingsForm(cfg Config, formID string) error {
+	body, err := json.Marshal(map[string]any{"formId": formID})
 	if err != nil {
 		return err
 	}
@@ -2258,6 +2373,54 @@ func parseGroupsFromOCSResponse(respBody []byte) ([]string, error) {
 		return nil, err
 	}
 	return cleanStringList(object.Groups), nil
+}
+
+func fetchGroupOptions(ctx context.Context, cfg Config, authValue string) ([]string, error) {
+	if cfg.NextcloudURL == "" || authValue == "" {
+		return nil, errors.New("missing Nextcloud URL or AppAPI auth")
+	}
+
+	endpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/cloud/groups")
+	if err != nil {
+		return nil, err
+	}
+	respBody, err := getOCSJSONResponse(ctx, cfg, endpoint, authValue)
+	if err != nil {
+		return nil, err
+	}
+	groups, err := parseGroupsFromOCSResponse(respBody)
+	if err != nil {
+		return nil, err
+	}
+	return groups, nil
+}
+
+func fallbackGroupOptionsFromConfig(ctx context.Context, cfg Config, authValue string) []string {
+	values, err := getAppConfigValues(ctx, cfg, []string{allowedGroupsKey}, authValue)
+	if err != nil {
+		return []string{}
+	}
+	return parseAllowedGroupsValue(values[allowedGroupsKey])
+}
+
+func getSettingsAdminUser(ctx context.Context, cfg Config, authValue string) string {
+	values, err := getAppConfigValues(ctx, cfg, []string{settingsAdminUserKey}, authValue)
+	if err != nil {
+		return ""
+	}
+	if raw, ok := values[settingsAdminUserKey]; ok {
+		if s, ok := raw.(string); ok {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
+func appAPIAuthForUser(cfg Config, userID string) string {
+	if cfg.AppSecret == "" || userID == "" {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString([]byte(userID + ":" + cfg.AppSecret))
 }
 
 func stringListsIntersect(allowed, actual []string) bool {

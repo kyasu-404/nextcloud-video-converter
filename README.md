@@ -26,9 +26,9 @@ The ExApp side in this repository exposes:
 
 ## Admin settings
 
-The app provides a custom Nextcloud admin settings form under the ExApps settings section and stores values in AppConfig only after Save is clicked:
+On enable, the ExApp registers AppAPI declarative admin settings under the ExApps settings section. Nextcloud stores changed values in AppConfig.
 
-- `allowed_groups` - comma-separated Nextcloud group IDs. Empty means all logged-in users can use the converter.
+- `allowed_groups` - selected Nextcloud group IDs. Empty means all logged-in users can use the converter.
 - `max_concurrent_jobs` - total concurrent conversions; default is `1`.
 - `max_concurrent_jobs_per_user` - concurrent conversions per user; default is `1`.
 - `max_queued_jobs_per_user` - queued conversions per user; default is `3`.
@@ -38,6 +38,7 @@ The app provides a custom Nextcloud admin settings form under the ExApps setting
 
 Group access is enforced by the ExApp on `/action/file`, `/ui/convert.html`, `/api/metadata`, and `/api/convert`.
 CPU limiting is applied with `cpulimit`; `threads_per_job` adds ffmpeg `-threads` only when it is greater than `0`.
+If AppAPI calls `/enabled` without a user context, set `settings_admin_user` in AppConfig to a Nextcloud admin user so the ExApp can populate group options.
 
 ## Build and run locally
 
