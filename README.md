@@ -26,16 +26,18 @@ The ExApp side in this repository exposes:
 
 ## Admin settings
 
-On enable, the ExApp registers a declarative admin settings form through AppAPI:
-`POST /ocs/v1.php/apps/app_api/api/v1/ui/settings`.
-
-The form is shown in the Nextcloud admin settings under the ExApps settings section and stores values in AppConfig:
+The app provides a custom Nextcloud admin settings form under the ExApps settings section and stores values in AppConfig only after Save is clicked:
 
 - `allowed_groups` - comma-separated Nextcloud group IDs. Empty means all logged-in users can use the converter.
-- `max_cpu_percent` - maximum ffmpeg CPU budget from `1` to `100`; default is `100`.
+- `max_concurrent_jobs` - total concurrent conversions; default is `1`.
+- `max_concurrent_jobs_per_user` - concurrent conversions per user; default is `1`.
+- `max_queued_jobs_per_user` - queued conversions per user; default is `3`.
+- `job_timeout_minutes` - job timeout in minutes; default is `120`.
+- `cpu_limit_percent` - maximum ffmpeg CPU budget from `1` to `100`; default is `50`.
+- `threads_per_job` - ffmpeg threads per job; default is `0`, which leaves thread selection unrestricted.
 
 Group access is enforced by the ExApp on `/action/file`, `/ui/convert.html`, `/api/metadata`, and `/api/convert`.
-CPU limiting is applied to ffmpeg with `-threads` and, in the Docker image, `cpulimit`.
+CPU limiting is applied with `cpulimit`; `threads_per_job` adds ffmpeg `-threads` only when it is greater than `0`.
 
 ## Build and run locally
 

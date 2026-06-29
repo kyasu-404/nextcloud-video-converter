@@ -51,11 +51,22 @@ var (
 )
 
 const (
-	settingsFormID        = "video_converter_admin"
-	allowedGroupsKey      = "allowed_groups"
-	maxCPUPercentKey      = "max_cpu_percent"
-	defaultMaxCPUPercent  = 100
-	settingsCacheDuration = 5 * time.Second
+	settingsFormID                  = "video_converter_admin"
+	allowedGroupsKey                = "allowed_groups"
+	maxConcurrentJobsKey            = "max_concurrent_jobs"
+	maxConcurrentJobsPerUserKey     = "max_concurrent_jobs_per_user"
+	maxQueuedJobsPerUserKey         = "max_queued_jobs_per_user"
+	jobTimeoutMinutesKey            = "job_timeout_minutes"
+	cpuLimitPercentKey              = "cpu_limit_percent"
+	legacyMaxCPUPercentKey          = "max_cpu_percent"
+	threadsPerJobKey                = "threads_per_job"
+	defaultMaxConcurrentJobs        = 1
+	defaultMaxConcurrentJobsPerUser = 1
+	defaultMaxQueuedJobsPerUser     = 3
+	defaultJobTimeoutMinutes        = 120
+	defaultCPULimitPercent          = 50
+	defaultThreadsPerJob            = 0
+	settingsCacheDuration           = 5 * time.Second
 )
 
 func updateAppAPIAuth(auth, userID string) {
@@ -91,8 +102,13 @@ type Config struct {
 }
 
 type AppSettings struct {
-	AllowedGroups []string
-	MaxCPUPercent int
+	AllowedGroups            []string
+	MaxConcurrentJobs        int
+	MaxConcurrentJobsPerUser int
+	MaxQueuedJobsPerUser     int
+	JobTimeoutMinutes        int
+	CPULimitPercent          int
+	ThreadsPerJob            int
 }
 
 type CPULimit struct {
@@ -181,6 +197,7 @@ type Task struct {
 	InputPath    string    `json:"input_path,omitempty"`
 	OutputPath   string    `json:"output_path,omitempty"`
 	RemoteOutput string    `json:"remote_output,omitempty"`
+	UserID       string    `json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -233,10 +250,10 @@ func main() {
 		go func() {
 			// Даем серверу 2 секунды на полный запуск перед отправкой запроса
 			time.Sleep(2 * time.Second)
-			if err := registerAdminSettings(cfg); err != nil {
-				log.Printf("admin settings registration failed: %v", err)
+			if err := unregisterDeclarativeAdminSettings(cfg); err != nil {
+				log.Printf("old declarative settings cleanup failed: %v", err)
 			} else {
-				log.Println("Admin settings registered")
+				log.Println("Old declarative settings cleaned up")
 			}
 			if err := registerTopMenu(cfg); err != nil {
 				log.Printf("Ошибка регистрации Top Menu: %v", err)
@@ -470,10 +487,10 @@ func makeEnabledHandler(cfg Config) http.HandlerFunc {
 			// AppAPI signals activation — register UI elements.
 			log.Println("/enabled: registering UI elements in Nextcloud")
 			go func() {
-				if err := registerAdminSettings(cfg); err != nil {
-					log.Printf("admin settings registration failed: %v", err)
+				if err := unregisterDeclarativeAdminSettings(cfg); err != nil {
+					log.Printf("old declarative settings cleanup failed: %v", err)
 				} else {
-					log.Println("Admin settings registered")
+					log.Println("Old declarative settings cleaned up")
 				}
 				if err := registerTopMenu(cfg); err != nil {
 					log.Printf("Ошибка регистрации Top Menu: %v", err)
@@ -620,48 +637,12 @@ func registerFilesAction(cfg Config) error {
 	return nil
 }
 
-func registerAdminSettings(cfg Config) error {
+func unregisterDeclarativeAdminSettings(cfg Config) error {
 	if cfg.NextcloudURL == "" || cfg.AppID == "" {
 		return errors.New("NEXTCLOUD_URL / APP_ID are required")
 	}
 
-	payload := map[string]any{
-		"formScheme": map[string]any{
-			"id":           settingsFormID,
-			"priority":     50,
-			"section_type": "admin",
-			"section_id":   "declarative_settings",
-			"title":        "Video Converter",
-			"description":  "Administrative settings for the Video Converter ExApp.",
-			"doc_url":      "",
-			"fields": []map[string]any{
-				{
-					"id":          allowedGroupsKey,
-					"title":       "Allowed groups",
-					"type":        "text",
-					"default":     "",
-					"description": "Comma-separated Nextcloud group IDs. Leave empty to allow all users.",
-					"placeholder": "video-editors, admin",
-					"label":       "",
-					"notify":      false,
-					"sensitive":   false,
-				},
-				{
-					"id":          maxCPUPercentKey,
-					"title":       "Maximum CPU usage",
-					"type":        "number",
-					"default":     defaultMaxCPUPercent,
-					"description": "Maximum percentage of total container CPU capacity for ffmpeg. Use 1-100.",
-					"placeholder": "100",
-					"label":       "%",
-					"notify":      false,
-					"sensitive":   false,
-				},
-			},
-		},
-	}
-
-	body, err := json.Marshal(payload)
+	body, err := json.Marshal(map[string]any{"formId": settingsFormID})
 	if err != nil {
 		return err
 	}
@@ -671,7 +652,11 @@ func registerAdminSettings(cfg Config) error {
 		return err
 	}
 
-	return postOCSJSON(cfg, endpoint, body, true)
+	err = sendOCSJSON(cfg, http.MethodDelete, endpoint, body, true)
+	if err != nil && strings.Contains(err.Error(), "404") {
+		return nil
+	}
+	return err
 }
 
 // actionHandler receives the file action context forwarded by AppAPI.
@@ -932,6 +917,16 @@ func makeConvertHandler(cfg Config) http.HandlerFunc {
 			return
 		}
 
+		settings, err := getCachedAppSettings(r.Context(), cfg, req.AppAPIAuth)
+		if err != nil {
+			log.Printf("settings read failed before enqueue, using defaults: %v", err)
+			settings = defaultAppSettings()
+		}
+		if queued := queuedJobsForUser(req.UserID); queued >= settings.MaxQueuedJobsPerUser {
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many queued jobs for user"})
+			return
+		}
+
 		taskID := newTask(req)
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"status":  "processing",
@@ -1040,6 +1035,7 @@ func newTask(req ConversionRequest) string {
 		Progress:  0,
 		Message:   "Добавлено в очередь",
 		InputPath: req.FilePath,
+		UserID:    req.UserID,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -1078,7 +1074,62 @@ func setTaskStatus(id, status, msg string, progress int) {
 	})
 }
 
-var conversionSemaphore = make(chan struct{}, 1)
+var conversionGate = &jobGate{
+	activeByUser: make(map[string]int),
+}
+
+type jobGate struct {
+	mu           sync.Mutex
+	activeTotal  int
+	activeByUser map[string]int
+}
+
+func (g *jobGate) acquire(ctx context.Context, settings AppSettings, userID string) error {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		g.mu.Lock()
+		canRun := g.activeTotal < settings.MaxConcurrentJobs && g.activeByUser[userID] < settings.MaxConcurrentJobsPerUser
+		if canRun {
+			g.activeTotal++
+			g.activeByUser[userID]++
+			g.mu.Unlock()
+			return nil
+		}
+		g.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (g *jobGate) release(userID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.activeTotal > 0 {
+		g.activeTotal--
+	}
+	if g.activeByUser[userID] > 0 {
+		g.activeByUser[userID]--
+	}
+}
+
+func queuedJobsForUser(userID string) int {
+	taskStore.RLock()
+	defer taskStore.RUnlock()
+
+	count := 0
+	for _, task := range taskStore.m {
+		if task.UserID == userID && task.Status == "В очереди" {
+			count++
+		}
+	}
+	return count
+}
 
 func processTask(cfg Config, taskID string, req ConversionRequest) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1109,23 +1160,6 @@ func processTask(cfg Config, taskID string, req ConversionRequest) {
 
 	setTaskStatus(taskID, "В очереди", "Ожидание своей очереди", 0)
 
-	// Acquire semaphore to limit to 1 concurrent conversion
-	select {
-	case conversionSemaphore <- struct{}{}:
-		defer func() { <-conversionSemaphore }()
-	case <-ctx.Done():
-		setTaskError(taskID, "Отменено пользователем")
-		return
-	}
-
-	setTaskStatus(taskID, "Скачивание", "Загрузка файла с сервера...", 5)
-
-	// Notify user that conversion has started
-	if req.UserID != "" {
-		sendNotification(cfg, req.UserID, "Конвертация начата",
-			"Файл "+req.FileName+" поставлен в очередь на конвертацию")
-	}
-
 	if cfg.NextcloudURL == "" {
 		setTaskError(taskID, "NEXTCLOUD_URL is required")
 		return
@@ -1136,7 +1170,31 @@ func processTask(cfg Config, taskID string, req ConversionRequest) {
 		log.Printf("settings read failed, using defaults: %v", err)
 		settings = defaultAppSettings()
 	}
-	cpuLimit := resolveCPULimit(settings.MaxCPUPercent)
+	if settings.JobTimeoutMinutes > 0 {
+		timeoutCtx, timeoutCancel := context.WithTimeout(ctx, time.Duration(settings.JobTimeoutMinutes)*time.Minute)
+		defer timeoutCancel()
+		ctx = timeoutCtx
+	}
+
+	if err := conversionGate.acquire(ctx, settings, req.UserID); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			setTaskError(taskID, "Превышено время ожидания или выполнения задачи")
+		} else {
+			setTaskError(taskID, "Отменено пользователем")
+		}
+		return
+	}
+	defer conversionGate.release(req.UserID)
+
+	cpuLimit := resolveCPULimit(settings.CPULimitPercent, settings.ThreadsPerJob)
+
+	setTaskStatus(taskID, "Скачивание", "Загрузка файла с сервера...", 5)
+
+	// Notify user that conversion has started
+	if req.UserID != "" {
+		sendNotification(cfg, req.UserID, "Конвертация начата",
+			"Файл "+req.FileName+" поставлен в очередь на конвертацию")
+	}
 
 	client := newHTTPClient(cfg.InsecureTLS)
 
@@ -1842,8 +1900,13 @@ func deleteWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, 
 
 func defaultAppSettings() AppSettings {
 	return AppSettings{
-		AllowedGroups: nil,
-		MaxCPUPercent: defaultMaxCPUPercent,
+		AllowedGroups:            nil,
+		MaxConcurrentJobs:        defaultMaxConcurrentJobs,
+		MaxConcurrentJobsPerUser: defaultMaxConcurrentJobsPerUser,
+		MaxQueuedJobsPerUser:     defaultMaxQueuedJobsPerUser,
+		JobTimeoutMinutes:        defaultJobTimeoutMinutes,
+		CPULimitPercent:          defaultCPULimitPercent,
+		ThreadsPerJob:            defaultThreadsPerJob,
 	}
 }
 
@@ -1879,7 +1942,16 @@ func readAppSettings(ctx context.Context, cfg Config, authValue string) (AppSett
 		return settings, nil
 	}
 
-	values, err := getAppConfigValues(ctx, cfg, []string{allowedGroupsKey, maxCPUPercentKey}, authValue)
+	values, err := getAppConfigValues(ctx, cfg, []string{
+		allowedGroupsKey,
+		maxConcurrentJobsKey,
+		maxConcurrentJobsPerUserKey,
+		maxQueuedJobsPerUserKey,
+		jobTimeoutMinutesKey,
+		cpuLimitPercentKey,
+		legacyMaxCPUPercentKey,
+		threadsPerJobKey,
+	}, authValue)
 	if err != nil {
 		return settings, err
 	}
@@ -1887,10 +1959,26 @@ func readAppSettings(ctx context.Context, cfg Config, authValue string) (AppSett
 	if raw, ok := values[allowedGroupsKey]; ok {
 		settings.AllowedGroups = parseAllowedGroupsValue(raw)
 	}
-	if raw, ok := values[maxCPUPercentKey]; ok {
-		settings.MaxCPUPercent = parseMaxCPUPercentValue(raw)
+	if raw, ok := values[maxConcurrentJobsKey]; ok {
+		settings.MaxConcurrentJobs = parsePositiveIntValue(raw, defaultMaxConcurrentJobs, 1, 100)
 	}
-	settings.MaxCPUPercent = clampCPUPercent(settings.MaxCPUPercent)
+	if raw, ok := values[maxConcurrentJobsPerUserKey]; ok {
+		settings.MaxConcurrentJobsPerUser = parsePositiveIntValue(raw, defaultMaxConcurrentJobsPerUser, 1, 100)
+	}
+	if raw, ok := values[maxQueuedJobsPerUserKey]; ok {
+		settings.MaxQueuedJobsPerUser = parsePositiveIntValue(raw, defaultMaxQueuedJobsPerUser, 0, 1000)
+	}
+	if raw, ok := values[jobTimeoutMinutesKey]; ok {
+		settings.JobTimeoutMinutes = parsePositiveIntValue(raw, defaultJobTimeoutMinutes, 1, 10080)
+	}
+	if raw, ok := values[cpuLimitPercentKey]; ok {
+		settings.CPULimitPercent = parsePositiveIntValue(raw, defaultCPULimitPercent, 1, 100)
+	} else if raw, ok := values[legacyMaxCPUPercentKey]; ok {
+		settings.CPULimitPercent = parsePositiveIntValue(raw, defaultCPULimitPercent, 1, 100)
+	}
+	if raw, ok := values[threadsPerJobKey]; ok {
+		settings.ThreadsPerJob = parsePositiveIntValue(raw, defaultThreadsPerJob, 0, 256)
+	}
 	return settings, nil
 }
 
@@ -2019,45 +2107,45 @@ func cleanStringList(values []string) []string {
 	return cleaned
 }
 
-func parseMaxCPUPercentValue(value any) int {
+func parsePositiveIntValue(value any, fallback, min, max int) int {
 	switch v := value.(type) {
 	case float64:
-		return clampCPUPercent(int(v))
+		return clampInt(int(v), min, max)
 	case int:
-		return clampCPUPercent(v)
+		return clampInt(v, min, max)
 	case json.Number:
 		n, err := v.Int64()
 		if err != nil {
-			return defaultMaxCPUPercent
+			return fallback
 		}
-		return clampCPUPercent(int(n))
+		return clampInt(int(n), min, max)
 	case string:
 		v = strings.TrimSpace(v)
 		if v == "" {
-			return defaultMaxCPUPercent
+			return fallback
 		}
 		var decoded any
 		if json.Unmarshal([]byte(v), &decoded) == nil && decoded != nil {
-			return parseMaxCPUPercentValue(decoded)
+			return parsePositiveIntValue(decoded, fallback, min, max)
 		}
 		n, err := strconv.Atoi(v)
 		if err != nil {
-			return defaultMaxCPUPercent
+			return fallback
 		}
-		return clampCPUPercent(n)
+		return clampInt(n, min, max)
 	default:
-		return defaultMaxCPUPercent
+		return fallback
 	}
 }
 
-func clampCPUPercent(percent int) int {
-	if percent <= 0 {
-		return defaultMaxCPUPercent
+func clampInt(value, min, max int) int {
+	if value < min {
+		return min
 	}
-	if percent > 100 {
-		return 100
+	if value > max {
+		return max
 	}
-	return percent
+	return value
 }
 
 func userIDFromPayload(payload map[string]any) string {
@@ -2185,23 +2273,20 @@ func stringListsIntersect(allowed, actual []string) bool {
 	return false
 }
 
-func resolveCPULimit(percent int) CPULimit {
-	percent = clampCPUPercent(percent)
+func resolveCPULimit(percent, threadsPerJob int) CPULimit {
+	percent = clampInt(percent, 1, 100)
+	threadsPerJob = clampInt(threadsPerJob, 0, 256)
 	if percent >= 100 {
-		return CPULimit{Percent: percent}
+		return CPULimit{Percent: percent, Threads: threadsPerJob}
 	}
 
 	cpus := runtime.NumCPU()
 	if cpus < 1 {
 		cpus = 1
 	}
-	threads := (cpus*percent + 99) / 100
-	if threads < 1 {
-		threads = 1
-	}
 	return CPULimit{
 		Percent:         percent,
-		Threads:         threads,
+		Threads:         threadsPerJob,
 		CPULimitPercent: cpus * percent,
 	}
 }

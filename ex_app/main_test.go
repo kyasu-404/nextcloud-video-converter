@@ -98,7 +98,7 @@ func TestParseAllowedGroupsValue(t *testing.T) {
 	}
 }
 
-func TestParseMaxCPUPercentValue(t *testing.T) {
+func TestParsePositiveIntValue(t *testing.T) {
 	tests := []struct {
 		name  string
 		value any
@@ -112,10 +112,23 @@ func TestParseMaxCPUPercentValue(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := parseMaxCPUPercentValue(tt.value); got != tt.want {
-				t.Fatalf("parseMaxCPUPercentValue() = %d, want %d", got, tt.want)
+			if got := parsePositiveIntValue(tt.value, 100, 1, 100); got != tt.want {
+				t.Fatalf("parsePositiveIntValue() = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestResolveCPULimitKeepsZeroThreadsUnlimited(t *testing.T) {
+	limit := resolveCPULimit(50, 0)
+	if limit.Percent != 50 {
+		t.Fatalf("Percent = %d, want 50", limit.Percent)
+	}
+	if limit.Threads != 0 {
+		t.Fatalf("Threads = %d, want 0", limit.Threads)
+	}
+	if limit.CPULimitPercent <= 0 {
+		t.Fatalf("CPULimitPercent = %d, want positive", limit.CPULimitPercent)
 	}
 }
 

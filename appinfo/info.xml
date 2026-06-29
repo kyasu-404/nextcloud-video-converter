@@ -3,20 +3,24 @@
       xsi:noNamespaceSchemaLocation="https://apps.nextcloud.com/schema/apps/info.xsd">
   <id>video_converter_exapp</id>
   <name>Video Converter</name>
+  <namespace>VideoConverterExApp</namespace>
   <summary>Convert videos from the Files menu</summary>
   <description>ExApp backend for ffmpeg conversion with WebDAV upload back to Nextcloud.</description>
-  <version>1.0.11</version>
+  <version>1.0.12</version>
   <licence>Apache 2.0</licence>
   <author>kyasu-404</author>
   <category>multimedia</category>
   <dependencies>
     <nextcloud min-version="31"/>
   </dependencies>
+  <settings>
+    <admin>OCA\VideoConverterExApp\Settings\Admin</admin>
+  </settings>
   <external-app>
     <docker-install>
       <registry>ghcr.io</registry>
       <image>kyasu-404/nextcloud-video-converter</image>
-      <image-tag>1.0.11</image-tag>
+      <image-tag>1.0.12</image-tag>
     </docker-install>
 
     <routes>
