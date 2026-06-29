@@ -90,6 +90,71 @@ func TestBuildFFmpegArgsAudioCodecs(t *testing.T) {
 	}
 }
 
+func TestParseAllowedGroupsValue(t *testing.T) {
+	got := parseAllowedGroupsValue("video-editors, admin; video-editors\nmedia")
+	want := []string{"video-editors", "admin", "media"}
+	if !sameStrings(got, want) {
+		t.Fatalf("parseAllowedGroupsValue() = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseMaxCPUPercentValue(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+		want  int
+	}{
+		{name: "string", value: "35", want: 35},
+		{name: "json string", value: "\"40\"", want: 40},
+		{name: "too high", value: float64(150), want: 100},
+		{name: "invalid defaults", value: "nope", want: 100},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseMaxCPUPercentValue(tt.value); got != tt.want {
+				t.Fatalf("parseMaxCPUPercentValue() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyFFmpegThreadLimit(t *testing.T) {
+	args := []string{"-y", "-i", "input.mp4", "-c:v", "libx264", "output.mp4"}
+	got := applyFFmpegThreadLimit(args, 2)
+	want := []string{"-y", "-i", "input.mp4", "-c:v", "libx264", "-threads", "2", "output.mp4"}
+	if !sameStrings(got, want) {
+		t.Fatalf("applyFFmpegThreadLimit() = %#v, want %#v", got, want)
+	}
+}
+
+func TestFFmpegCommandUsesCPULimitWhenAvailable(t *testing.T) {
+	cmd, args := ffmpegCommand([]string{"-i", "in.mp4", "out.mp4"}, CPULimit{
+		Percent:         50,
+		CPULimitPercent: 200,
+	}, true)
+
+	if cmd != "cpulimit" {
+		t.Fatalf("command = %q, want cpulimit", cmd)
+	}
+	want := []string{"-l", "200", "--", "ffmpeg", "-i", "in.mp4", "out.mp4"}
+	if !sameStrings(args, want) {
+		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func hasArgPair(args []string, key, value string) bool {
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == key && args[i+1] == value {

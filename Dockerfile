@@ -13,7 +13,8 @@ FROM alpine:3.21
 # ca-certificates required: HaRP installs Nextcloud custom CA certs into the container
 # ffmpeg required: for video encoding/decoding
 # frp and bash are required by the standard HaRP ExApp launcher.
-RUN apk add --no-cache ffmpeg ca-certificates tzdata curl bash frp
+# cpulimit enforces the admin CPU percentage for ffmpeg at runtime.
+RUN apk add --no-cache ffmpeg cpulimit ca-certificates tzdata curl bash frp
 
 WORKDIR /app
 

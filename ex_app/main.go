@@ -20,6 +20,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,6 +48,14 @@ var (
 	globalAppAPIAuth string
 	globalAppAPIUser string
 	globalAuthMutex  sync.RWMutex
+)
+
+const (
+	settingsFormID        = "video_converter_admin"
+	allowedGroupsKey      = "allowed_groups"
+	maxCPUPercentKey      = "max_cpu_percent"
+	defaultMaxCPUPercent  = 100
+	settingsCacheDuration = 5 * time.Second
 )
 
 func updateAppAPIAuth(auth, userID string) {
@@ -80,6 +89,23 @@ type Config struct {
 	AppVersion string
 	AAVersion  string
 }
+
+type AppSettings struct {
+	AllowedGroups []string
+	MaxCPUPercent int
+}
+
+type CPULimit struct {
+	Percent         int
+	Threads         int
+	CPULimitPercent int
+}
+
+var settingsCache = struct {
+	sync.RWMutex
+	value   AppSettings
+	expires time.Time
+}{value: defaultAppSettings()}
 
 // isHaRPMode returns true when running under HaRP Docker deployment
 // (AppAPI injects APP_ID automatically; manual mode uses APP_ID too but
@@ -166,7 +192,7 @@ func main() {
 	mux.HandleFunc("/heartbeat", heartbeatHandler)
 	mux.HandleFunc("/init", makeInitHandler(cfg))
 	mux.HandleFunc("/enabled", makeEnabledHandler(cfg))
-	mux.HandleFunc("/action/file", actionHandler)
+	mux.HandleFunc("/action/file", makeActionHandler(cfg))
 	mux.HandleFunc("/ui/convert.html", makeUIHandler(cfg))
 	mux.HandleFunc("/ui/app.js", assetHandler("ui/app.js", "application/javascript; charset=utf-8"))
 	mux.HandleFunc("/ui/style.css", assetHandler("ui/style.css", "text/css; charset=utf-8"))
@@ -207,6 +233,11 @@ func main() {
 		go func() {
 			// Даем серверу 2 секунды на полный запуск перед отправкой запроса
 			time.Sleep(2 * time.Second)
+			if err := registerAdminSettings(cfg); err != nil {
+				log.Printf("admin settings registration failed: %v", err)
+			} else {
+				log.Println("Admin settings registered")
+			}
 			if err := registerTopMenu(cfg); err != nil {
 				log.Printf("Ошибка регистрации Top Menu: %v", err)
 			} else {
@@ -439,6 +470,11 @@ func makeEnabledHandler(cfg Config) http.HandlerFunc {
 			// AppAPI signals activation — register UI elements.
 			log.Println("/enabled: registering UI elements in Nextcloud")
 			go func() {
+				if err := registerAdminSettings(cfg); err != nil {
+					log.Printf("admin settings registration failed: %v", err)
+				} else {
+					log.Println("Admin settings registered")
+				}
 				if err := registerTopMenu(cfg); err != nil {
 					log.Printf("Ошибка регистрации Top Menu: %v", err)
 				} else {
@@ -584,77 +620,142 @@ func registerFilesAction(cfg Config) error {
 	return nil
 }
 
+func registerAdminSettings(cfg Config) error {
+	if cfg.NextcloudURL == "" || cfg.AppID == "" {
+		return errors.New("NEXTCLOUD_URL / APP_ID are required")
+	}
+
+	payload := map[string]any{
+		"formScheme": map[string]any{
+			"id":           settingsFormID,
+			"priority":     50,
+			"section_type": "admin",
+			"section_id":   "declarative_settings",
+			"title":        "Video Converter",
+			"description":  "Administrative settings for the Video Converter ExApp.",
+			"doc_url":      "",
+			"fields": []map[string]any{
+				{
+					"id":          allowedGroupsKey,
+					"title":       "Allowed groups",
+					"type":        "text",
+					"default":     "",
+					"description": "Comma-separated Nextcloud group IDs. Leave empty to allow all users.",
+					"placeholder": "video-editors, admin",
+					"label":       "",
+					"notify":      false,
+					"sensitive":   false,
+				},
+				{
+					"id":          maxCPUPercentKey,
+					"title":       "Maximum CPU usage",
+					"type":        "number",
+					"default":     defaultMaxCPUPercent,
+					"description": "Maximum percentage of total container CPU capacity for ffmpeg. Use 1-100.",
+					"placeholder": "100",
+					"label":       "%",
+					"notify":      false,
+					"sensitive":   false,
+				},
+			},
+		},
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	endpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/apps/app_api/api/v1/ui/settings")
+	if err != nil {
+		return err
+	}
+
+	return postOCSJSON(cfg, endpoint, body, true)
+}
+
 // actionHandler receives the file action context forwarded by AppAPI.
 // It returns a redirect handler pointing to the UI page that can render the modal/page.
 var fileInfoCache sync.Map
 
-func actionHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Читаем тело запроса целиком (полезно для отладки)
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
-	if err != nil {
-		http.Error(w, "body too large", http.StatusBadRequest)
-		return
-	}
-
-	// Используем map[string]any, чтобы съесть и числа, и строки без паники
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		log.Printf("ERROR parsing file action JSON: %v. Body: %s", err, string(body))
-		http.Error(w, "invalid json", http.StatusBadRequest)
-		return
-	}
-
-	// Поддержка v2 payload (где данные приходят в массиве files)
-	if files, ok := payload["files"].([]any); ok && len(files) > 0 {
-		if fileObj, ok := files[0].(map[string]any); ok {
-			payload = fileObj
+func makeActionHandler(cfg Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
 		}
+
+		// Читаем тело запроса целиком (полезно для отладки)
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+		if err != nil {
+			http.Error(w, "body too large", http.StatusBadRequest)
+			return
+		}
+
+		// Используем map[string]any, чтобы съесть и числа, и строки без паники
+		var payload map[string]any
+		if err := json.Unmarshal(body, &payload); err != nil {
+			log.Printf("ERROR parsing file action JSON: %v. Body: %s", err, string(body))
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+
+		// Поддержка v2 payload (где данные приходят в массиве files)
+		if files, ok := payload["files"].([]any); ok && len(files) > 0 {
+			if fileObj, ok := files[0].(map[string]any); ok {
+				payload = fileObj
+			}
+		}
+
+		userID := userIDFromPayload(payload)
+		if userID == "" {
+			userID = userIDFromAppAPIAuth(r.Header.Get("AUTHORIZATION-APP-API"))
+		}
+		if err := requireAppAccess(r.Context(), cfg, r.Header.Get("AUTHORIZATION-APP-API"), userID); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+
+		// Безопасно конвертируем числовой fileId в строку
+		fileID := fmt.Sprintf("%v", payload["fileId"])
+		if fileID == "<nil>" || fileID == "" {
+			log.Printf("ERROR: fileId is missing from payload. Body: %s", string(body))
+			http.Error(w, "fileId is missing", http.StatusBadRequest)
+			return
+		}
+
+		fileName := "video"
+		if name, ok := payload["name"].(string); ok && name != "" {
+			fileName = name
+		}
+
+		// Nextcloud иногда может присылать dir вместо directory, страхуемся
+		directory := "/"
+		if dir, ok := payload["directory"].(string); ok && dir != "" {
+			directory = dir
+		} else if dir, ok := payload["dir"].(string); ok && dir != "" {
+			directory = dir
+		}
+
+		relativePath := buildRelativePath(directory, fileName)
+
+		// Cache the file info for the UI handler
+		fileInfoCache.Store(fileID, map[string]string{
+			"file_name": fileName,
+			"file_path": relativePath,
+		})
+
+		log.Printf("File action triggered: %s (ID: %s)", relativePath, fileID)
+
+		// redirect_handler must be just the top-menu entry name (no leading slash,
+		// no query params). The JS appends "?fileIds=..." automatically.
+		// The embedded page will be served at:
+		//   /apps/app_api/embedded/{appId}/convert?fileIds=...
+		// which loads the ExApp UI via the proxy.
+		writeJSON(w, http.StatusOK, map[string]any{
+			"redirect_handler": "convert",
+		})
 	}
-
-	// Безопасно конвертируем числовой fileId в строку
-	fileID := fmt.Sprintf("%v", payload["fileId"])
-	if fileID == "<nil>" || fileID == "" {
-		log.Printf("ERROR: fileId is missing from payload. Body: %s", string(body))
-		http.Error(w, "fileId is missing", http.StatusBadRequest)
-		return
-	}
-
-	fileName := "video"
-	if name, ok := payload["name"].(string); ok && name != "" {
-		fileName = name
-	}
-
-	// Nextcloud иногда может присылать dir вместо directory, страхуемся
-	directory := "/"
-	if dir, ok := payload["directory"].(string); ok && dir != "" {
-		directory = dir
-	} else if dir, ok := payload["dir"].(string); ok && dir != "" {
-		directory = dir
-	}
-
-	relativePath := buildRelativePath(directory, fileName)
-
-	// Cache the file info for the UI handler
-	fileInfoCache.Store(fileID, map[string]string{
-		"file_name": fileName,
-		"file_path": relativePath,
-	})
-
-	log.Printf("File action triggered: %s (ID: %s)", relativePath, fileID)
-
-	// redirect_handler must be just the top-menu entry name (no leading slash,
-	// no query params). The JS appends "?fileIds=..." automatically.
-	// The embedded page will be served at:
-	//   /apps/app_api/embedded/{appId}/convert?fileIds=...
-	// which loads the ExApp UI via the proxy.
-	writeJSON(w, http.StatusOK, map[string]any{
-		"redirect_handler": "convert",
-	})
 }
 
 // makeInitJSHandler serves a small bootstrap that embeds the ExApp UI into the
@@ -737,6 +838,13 @@ func makeUIHandler(cfg Config) http.HandlerFunc {
 			return
 		}
 
+		appAPIAuth := r.Header.Get("AUTHORIZATION-APP-API")
+		userID := userIDFromAppAPIAuth(appAPIAuth)
+		if err := requireAppAccess(r.Context(), cfg, appAPIAuth, userID); err != nil {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
+
 		b, err := uiFS.ReadFile("ui/index.html")
 		if err != nil {
 			http.Error(w, "ui not found", http.StatusInternalServerError)
@@ -814,6 +922,11 @@ func makeConvertHandler(cfg Config) http.HandlerFunc {
 			req.UserID = userIDFromAppAPIAuth(req.AppAPIAuth)
 		}
 
+		if err := requireAppAccess(r.Context(), cfg, req.AppAPIAuth, req.UserID); err != nil {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error()})
+			return
+		}
+
 		if err := validateRequest(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
@@ -852,6 +965,12 @@ func makeMetadataHandler(cfg Config) http.HandlerFunc {
 
 		cookie := r.Header.Get("Cookie")
 		appAPIAuth := r.Header.Get("AUTHORIZATION-APP-API")
+		userID := userIDFromAppAPIAuth(appAPIAuth)
+
+		if err := requireAppAccess(r.Context(), cfg, appAPIAuth, userID); err != nil {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error()})
+			return
+		}
 
 		info, err := probeRemoteMedia(r.Context(), cfg, cookie, appAPIAuth, req.FilePath)
 		if err != nil {
@@ -1012,6 +1131,13 @@ func processTask(cfg Config, taskID string, req ConversionRequest) {
 		return
 	}
 
+	settings, err := getCachedAppSettings(ctx, cfg, req.AppAPIAuth)
+	if err != nil {
+		log.Printf("settings read failed, using defaults: %v", err)
+		settings = defaultAppSettings()
+	}
+	cpuLimit := resolveCPULimit(settings.MaxCPUPercent)
+
 	client := newHTTPClient(cfg.InsecureTLS)
 
 	tmpDir := cfg.OutputDir
@@ -1065,8 +1191,9 @@ func processTask(cfg Config, taskID string, req ConversionRequest) {
 		setTaskError(taskID, err.Error())
 		return
 	}
+	args = applyFFmpegThreadLimit(args, cpuLimit.Threads)
 
-	if err := runFFmpeg(taskID, ctx, args, info.DurationSeconds, cfg, req.UserID, req.FileName); err != nil {
+	if err := runFFmpeg(taskID, ctx, args, info.DurationSeconds, cfg, req.UserID, req.FileName, cpuLimit); err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) || strings.Contains(err.Error(), "context canceled") {
 			setTaskError(taskID, "Отменено пользователем")
 		} else {
@@ -1103,12 +1230,13 @@ func processTask(cfg Config, taskID string, req ConversionRequest) {
 	})
 }
 
-func runFFmpeg(taskID string, ctx context.Context, args []string, durationSeconds float64, cfg Config, userID, fileName string) error {
+func runFFmpeg(taskID string, ctx context.Context, args []string, durationSeconds float64, cfg Config, userID, fileName string, cpuLimit CPULimit) error {
 	if durationSeconds <= 0 {
 		durationSeconds = 1
 	}
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	cmdName, cmdArgs := ffmpegCommand(args, cpuLimit, cpulimitAvailable())
+	cmd := exec.CommandContext(ctx, cmdName, cmdArgs...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -1710,6 +1838,397 @@ func deleteWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, 
 		return fmt.Errorf("webdav DELETE %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 	return nil
+}
+
+func defaultAppSettings() AppSettings {
+	return AppSettings{
+		AllowedGroups: nil,
+		MaxCPUPercent: defaultMaxCPUPercent,
+	}
+}
+
+func getCachedAppSettings(ctx context.Context, cfg Config, authValue string) (AppSettings, error) {
+	if cfg.NextcloudURL == "" || cfg.AppID == "" || authValue == "" {
+		return defaultAppSettings(), nil
+	}
+
+	now := time.Now()
+	settingsCache.RLock()
+	if now.Before(settingsCache.expires) {
+		value := settingsCache.value
+		settingsCache.RUnlock()
+		return value, nil
+	}
+	settingsCache.RUnlock()
+
+	value, err := readAppSettings(ctx, cfg, authValue)
+	if err != nil {
+		return defaultAppSettings(), err
+	}
+
+	settingsCache.Lock()
+	settingsCache.value = value
+	settingsCache.expires = now.Add(settingsCacheDuration)
+	settingsCache.Unlock()
+	return value, nil
+}
+
+func readAppSettings(ctx context.Context, cfg Config, authValue string) (AppSettings, error) {
+	settings := defaultAppSettings()
+	if cfg.NextcloudURL == "" || cfg.AppID == "" || authValue == "" {
+		return settings, nil
+	}
+
+	values, err := getAppConfigValues(ctx, cfg, []string{allowedGroupsKey, maxCPUPercentKey}, authValue)
+	if err != nil {
+		return settings, err
+	}
+
+	if raw, ok := values[allowedGroupsKey]; ok {
+		settings.AllowedGroups = parseAllowedGroupsValue(raw)
+	}
+	if raw, ok := values[maxCPUPercentKey]; ok {
+		settings.MaxCPUPercent = parseMaxCPUPercentValue(raw)
+	}
+	settings.MaxCPUPercent = clampCPUPercent(settings.MaxCPUPercent)
+	return settings, nil
+}
+
+func getAppConfigValues(ctx context.Context, cfg Config, keys []string, authValue string) (map[string]any, error) {
+	body, err := json.Marshal(map[string]any{"configKeys": keys})
+	if err != nil {
+		return nil, err
+	}
+
+	endpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/apps/app_api/api/v1/ex-app/config/get-values")
+	if err != nil {
+		return nil, err
+	}
+
+	respBody, err := postOCSJSONResponse(ctx, cfg, endpoint, body, authValue)
+	if err != nil {
+		return nil, err
+	}
+
+	var wrapped struct {
+		OCS struct {
+			Data json.RawMessage `json:"data"`
+		} `json:"ocs"`
+	}
+	if err := json.Unmarshal(respBody, &wrapped); err != nil {
+		return nil, err
+	}
+
+	data := wrapped.OCS.Data
+	if len(data) == 0 {
+		data = respBody
+	}
+
+	var rows []struct {
+		ConfigKey   string `json:"configkey"`
+		ConfigValue any    `json:"configvalue"`
+	}
+	if err := json.Unmarshal(data, &rows); err != nil {
+		return nil, err
+	}
+
+	values := make(map[string]any, len(rows))
+	for _, row := range rows {
+		if row.ConfigKey != "" {
+			values[row.ConfigKey] = row.ConfigValue
+		}
+	}
+	return values, nil
+}
+
+func postOCSJSONResponse(ctx context.Context, cfg Config, endpoint string, body []byte, authValue string) ([]byte, error) {
+	client := newHTTPClient(cfg.InsecureTLS)
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("OCS-APIRequest", "true")
+	setAppAPIRequestHeaders(req, cfg, authValue)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(respBody)))
+	}
+	return respBody, nil
+}
+
+func parseAllowedGroupsValue(value any) []string {
+	switch v := value.(type) {
+	case string:
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return nil
+		}
+		var decoded []string
+		if strings.HasPrefix(v, "[") && json.Unmarshal([]byte(v), &decoded) == nil {
+			return cleanStringList(decoded)
+		}
+		return splitGroupList(v)
+	case []string:
+		return cleanStringList(v)
+	case []any:
+		groups := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				groups = append(groups, s)
+			}
+		}
+		return cleanStringList(groups)
+	default:
+		return nil
+	}
+}
+
+func splitGroupList(value string) []string {
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t'
+	})
+	return cleanStringList(fields)
+}
+
+func cleanStringList(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	cleaned := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		cleaned = append(cleaned, value)
+	}
+	return cleaned
+}
+
+func parseMaxCPUPercentValue(value any) int {
+	switch v := value.(type) {
+	case float64:
+		return clampCPUPercent(int(v))
+	case int:
+		return clampCPUPercent(v)
+	case json.Number:
+		n, err := v.Int64()
+		if err != nil {
+			return defaultMaxCPUPercent
+		}
+		return clampCPUPercent(int(n))
+	case string:
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return defaultMaxCPUPercent
+		}
+		var decoded any
+		if json.Unmarshal([]byte(v), &decoded) == nil && decoded != nil {
+			return parseMaxCPUPercentValue(decoded)
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return defaultMaxCPUPercent
+		}
+		return clampCPUPercent(n)
+	default:
+		return defaultMaxCPUPercent
+	}
+}
+
+func clampCPUPercent(percent int) int {
+	if percent <= 0 {
+		return defaultMaxCPUPercent
+	}
+	if percent > 100 {
+		return 100
+	}
+	return percent
+}
+
+func userIDFromPayload(payload map[string]any) string {
+	if s, ok := payload["userId"].(string); ok && s != "" {
+		return s
+	}
+	if s, ok := payload["user_id"].(string); ok && s != "" {
+		return s
+	}
+	return ""
+}
+
+func requireAppAccess(ctx context.Context, cfg Config, authValue, userID string) error {
+	settings, err := getCachedAppSettings(ctx, cfg, authValue)
+	if err != nil {
+		log.Printf("settings read failed during access check, using defaults: %v", err)
+		settings = defaultAppSettings()
+	}
+	if len(settings.AllowedGroups) == 0 {
+		return nil
+	}
+	if userID == "" {
+		return errors.New("Video Converter is restricted to selected groups")
+	}
+
+	userGroups, err := getUserGroups(ctx, cfg, userID, authValue)
+	if err != nil {
+		return fmt.Errorf("cannot verify Video Converter group access: %w", err)
+	}
+	if stringListsIntersect(settings.AllowedGroups, userGroups) {
+		return nil
+	}
+	return errors.New("Video Converter is not enabled for your group")
+}
+
+func getUserGroups(ctx context.Context, cfg Config, userID, authValue string) ([]string, error) {
+	if cfg.NextcloudURL == "" || authValue == "" || userID == "" {
+		return nil, errors.New("missing Nextcloud URL, AppAPI auth, or user id")
+	}
+
+	userEndpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/cloud/users/"+url.PathEscape(userID))
+	if err != nil {
+		return nil, err
+	}
+	if respBody, err := getOCSJSONResponse(ctx, cfg, userEndpoint, authValue); err == nil {
+		if groups, parseErr := parseGroupsFromOCSResponse(respBody); parseErr == nil {
+			return groups, nil
+		}
+	}
+
+	groupsEndpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/cloud/users/"+url.PathEscape(userID)+"/groups")
+	if err != nil {
+		return nil, err
+	}
+	respBody, err := getOCSJSONResponse(ctx, cfg, groupsEndpoint, authValue)
+	if err != nil {
+		return nil, err
+	}
+	return parseGroupsFromOCSResponse(respBody)
+}
+
+func getOCSJSONResponse(ctx context.Context, cfg Config, endpoint, authValue string) ([]byte, error) {
+	client := newHTTPClient(cfg.InsecureTLS)
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("OCS-APIRequest", "true")
+	setAppAPIRequestHeaders(req, cfg, authValue)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(respBody)))
+	}
+	return respBody, nil
+}
+
+func parseGroupsFromOCSResponse(respBody []byte) ([]string, error) {
+	var wrapped struct {
+		OCS struct {
+			Data json.RawMessage `json:"data"`
+		} `json:"ocs"`
+	}
+	if err := json.Unmarshal(respBody, &wrapped); err != nil {
+		return nil, err
+	}
+	data := wrapped.OCS.Data
+	if len(data) == 0 {
+		data = respBody
+	}
+
+	var direct []string
+	if json.Unmarshal(data, &direct) == nil {
+		return cleanStringList(direct), nil
+	}
+	var object struct {
+		Groups []string `json:"groups"`
+	}
+	if err := json.Unmarshal(data, &object); err != nil {
+		return nil, err
+	}
+	return cleanStringList(object.Groups), nil
+}
+
+func stringListsIntersect(allowed, actual []string) bool {
+	actualSet := make(map[string]struct{}, len(actual))
+	for _, group := range actual {
+		actualSet[group] = struct{}{}
+	}
+	for _, group := range allowed {
+		if _, ok := actualSet[group]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveCPULimit(percent int) CPULimit {
+	percent = clampCPUPercent(percent)
+	if percent >= 100 {
+		return CPULimit{Percent: percent}
+	}
+
+	cpus := runtime.NumCPU()
+	if cpus < 1 {
+		cpus = 1
+	}
+	threads := (cpus*percent + 99) / 100
+	if threads < 1 {
+		threads = 1
+	}
+	return CPULimit{
+		Percent:         percent,
+		Threads:         threads,
+		CPULimitPercent: cpus * percent,
+	}
+}
+
+func applyFFmpegThreadLimit(args []string, threads int) []string {
+	if threads <= 0 || len(args) == 0 {
+		return args
+	}
+	out := make([]string, 0, len(args)+2)
+	out = append(out, args[:len(args)-1]...)
+	out = append(out, "-threads", strconv.Itoa(threads))
+	out = append(out, args[len(args)-1])
+	return out
+}
+
+func cpulimitAvailable() bool {
+	_, err := exec.LookPath("cpulimit")
+	return err == nil
+}
+
+func ffmpegCommand(args []string, cpuLimit CPULimit, hasCPULimit bool) (string, []string) {
+	if !hasCPULimit || cpuLimit.CPULimitPercent <= 0 || cpuLimit.Percent >= 100 {
+		return "ffmpeg", args
+	}
+	cmdArgs := []string{"-l", strconv.Itoa(cpuLimit.CPULimitPercent), "--", "ffmpeg"}
+	cmdArgs = append(cmdArgs, args...)
+	return "cpulimit", cmdArgs
 }
 
 func buildNextcloudAPIURL(cfg Config, endpoint string) (string, error) {

@@ -24,6 +24,19 @@ The ExApp side in this repository exposes:
 - `POST /api/convert`
 - `GET /api/task/{id}`
 
+## Admin settings
+
+On enable, the ExApp registers a declarative admin settings form through AppAPI:
+`POST /ocs/v1.php/apps/app_api/api/v1/ui/settings`.
+
+The form is shown in the Nextcloud admin settings under the ExApps settings section and stores values in AppConfig:
+
+- `allowed_groups` - comma-separated Nextcloud group IDs. Empty means all logged-in users can use the converter.
+- `max_cpu_percent` - maximum ffmpeg CPU budget from `1` to `100`; default is `100`.
+
+Group access is enforced by the ExApp on `/action/file`, `/ui/convert.html`, `/api/metadata`, and `/api/convert`.
+CPU limiting is applied to ffmpeg with `-threads` and, in the Docker image, `cpulimit`.
+
 ## Build and run locally
 
 ```bash
