@@ -7,7 +7,8 @@ WORKDIR /src
 
 COPY go.mod ./
 COPY ex_app ./ex_app
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /out/video-converter ./ex_app
+ARG TARGETARCH=amd64
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/video-converter ./ex_app
 
 FROM alpine:3.21
 # ca-certificates required: HaRP installs Nextcloud custom CA certs into the container

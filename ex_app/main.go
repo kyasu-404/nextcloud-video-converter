@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -25,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -51,6 +53,12 @@ var (
 
 	adminSettingsRefreshOnce sync.Once
 )
+
+type cachedFileInfo struct {
+	Name      string
+	Path      string
+	CreatedAt time.Time
+}
 
 const (
 	legacySettingsFormID            = "video_converter_admin"
@@ -87,10 +95,81 @@ func updateAppAPIAuth(auth, userID string) {
 	}
 }
 
+func setGlobalAuthIfEmpty(auth string) {
+	globalAuthMutex.Lock()
+	defer globalAuthMutex.Unlock()
+	if globalAppAPIAuth == "" && auth != "" {
+		globalAppAPIAuth = auth
+	}
+}
+
 func getAppAPIAuth() string {
 	globalAuthMutex.RLock()
 	defer globalAuthMutex.RUnlock()
 	return globalAppAPIAuth
+}
+
+func pruneOldTasks() {
+	taskStore.Lock()
+	defer taskStore.Unlock()
+	cutoff := time.Now().Add(-2 * time.Hour)
+	for id, t := range taskStore.m {
+		if (t.Status == "Готово" || t.Status == "Ошибка") && t.UpdatedAt.Before(cutoff) {
+			delete(taskStore.m, id)
+		}
+	}
+}
+
+func pruneOldFileCache() {
+	cutoff := time.Now().Add(-2 * time.Hour)
+	fileInfoCache.Range(func(key, value any) bool {
+		switch v := value.(type) {
+		case cachedFileInfo:
+			if v.CreatedAt.Before(cutoff) {
+				fileInfoCache.Delete(key)
+			}
+		default:
+			fileInfoCache.Delete(key)
+		}
+		return true
+	})
+}
+
+func pruneOldTempFiles(dir string) {
+	if dir == "" {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-2 * time.Hour)
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasPrefix(name, "vc-input-") || strings.HasPrefix(name, "vc-output-") {
+			info, err := entry.Info()
+			if err == nil && info.ModTime().Before(cutoff) {
+				_ = os.Remove(filepath.Join(dir, name))
+			}
+		}
+	}
+}
+
+func startCleanupLoop(ctx context.Context, outputDir string) {
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				pruneOldTasks()
+				pruneOldFileCache()
+				pruneOldTempFiles(outputDir)
+			}
+		}
+	}()
 }
 
 type Config struct {
@@ -182,6 +261,7 @@ type MediaInfo struct {
 	FPS             string
 	BitDepth        string
 	HasSubtitles    bool
+	SubtitleCodec   string
 	Transfer        string
 	Primaries       string
 	Space           string
@@ -211,6 +291,12 @@ type Task struct {
 
 func main() {
 	cfg := loadConfig()
+
+	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	pruneOldTempFiles(cfg.OutputDir)
+	startCleanupLoop(rootCtx, cfg.OutputDir)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/heartbeat", heartbeatHandler)
@@ -286,6 +372,7 @@ func main() {
 		}()
 	}
 
+	serverErr := make(chan error, 1)
 	if frpMode {
 		const socketPath = "/tmp/exapp.sock"
 		if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -299,10 +386,39 @@ func main() {
 		if err := os.Chmod(socketPath, 0o666); err != nil {
 			log.Fatalf("set Unix socket permissions: %v", err)
 		}
-		log.Fatal(srv.Serve(listener))
+		go func() {
+			if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverErr <- err
+			}
+		}()
+	} else {
+		go func() {
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverErr <- err
+			}
+		}()
 	}
 
-	log.Fatal(srv.ListenAndServe())
+	select {
+	case err := <-serverErr:
+		log.Fatalf("server error: %v", err)
+	case <-rootCtx.Done():
+		log.Println("Shutting down Video Converter ExApp gracefully...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		cancelFuncs.Lock()
+		for id, cancelFn := range cancelFuncs.m {
+			log.Printf("Cancelling in-flight task %s", id)
+			cancelFn()
+		}
+		cancelFuncs.Unlock()
+
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("server shutdown error: %v", err)
+		}
+		log.Println("Server exited")
+	}
 }
 
 func loadConfig() Config {
@@ -321,7 +437,7 @@ func loadConfig() Config {
 		InsecureTLS: envBool("NEXTCLOUD_INSECURE_TLS", false),
 		AppID:       env("APP_ID", "video_converter_exapp"),
 		AppSecret:   env("APP_SECRET", ""),
-		AppVersion:  env("APP_VERSION", "1.0.0"),
+		AppVersion:  env("APP_VERSION", "1.0.19"),
 		AAVersion:   env("AA_VERSION", "4.0.0"),
 	}
 }
@@ -362,10 +478,8 @@ func logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 
-		// Capture the signed AppAPI auth header that Nextcloud sends to us.
-		// We re-use the exact same value when calling Nextcloud APIs back.
 		auth := r.Header.Get("AUTHORIZATION-APP-API")
-		updateAppAPIAuth(auth, "")
+		setGlobalAuthIfEmpty(auth)
 
 		next.ServeHTTP(w, r)
 		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start).Round(time.Millisecond))
@@ -388,6 +502,10 @@ func makeInitHandler(cfg Config) http.HandlerFunc {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
+		}
+
+		if auth := r.Header.Get("AUTHORIZATION-APP-API"); auth != "" {
+			updateAppAPIAuth(auth, "")
 		}
 
 		if cfg.NextcloudURL != "" && cfg.AppID != "" {
@@ -444,6 +562,10 @@ func makeEnabledHandler(cfg Config) http.HandlerFunc {
 		if r.Method != http.MethodPut {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
+		}
+
+		if auth := r.Header.Get("AUTHORIZATION-APP-API"); auth != "" {
+			updateAppAPIAuth(auth, "")
 		}
 
 		// Read the body first so we can parse app_api_user AND enabled.
@@ -864,9 +986,10 @@ func makeActionHandler(cfg Config) http.HandlerFunc {
 		relativePath := buildRelativePath(directory, fileName)
 
 		// Cache the file info for the UI handler
-		fileInfoCache.Store(fileID, map[string]string{
-			"file_name": fileName,
-			"file_path": relativePath,
+		fileInfoCache.Store(fileID, cachedFileInfo{
+			Name:      fileName,
+			Path:      relativePath,
+			CreatedAt: time.Now(),
 		})
 
 		log.Printf("File action triggered: %s (ID: %s)", relativePath, fileID)
@@ -990,6 +1113,9 @@ func makeUIHandler(cfg Config) http.HandlerFunc {
 				if infoMap, ok := cachedInfo.(map[string]string); ok {
 					fileName = escapeAttr(infoMap["file_name"])
 					filePath = escapeAttr(infoMap["file_path"])
+				} else if infoObj, ok := cachedInfo.(cachedFileInfo); ok {
+					fileName = escapeAttr(infoObj.Name)
+					filePath = escapeAttr(infoObj.Path)
 				}
 			}
 		}
@@ -1523,6 +1649,7 @@ func runFFmpeg(taskID string, ctx context.Context, args []string, durationSecond
 	}()
 
 	go func() {
+		wg.Wait()
 		doneCh <- cmd.Wait()
 	}()
 
@@ -1547,7 +1674,6 @@ func runFFmpeg(taskID string, ctx context.Context, args []string, durationSecond
 			}
 		case err := <-doneCh:
 			doneCh = nil
-			wg.Wait()
 			if err != nil {
 				msg := strings.TrimSpace(stderrBuf.String())
 				if msg == "" {
@@ -1558,7 +1684,6 @@ func runFFmpeg(taskID string, ctx context.Context, args []string, durationSecond
 			return nil
 		}
 	}
-	wg.Wait()
 	return nil
 }
 
@@ -1571,7 +1696,13 @@ func buildFFmpegArgs(req ConversionRequest, info MediaInfo, inPath, outPath stri
 		args = append(args, "-map", "0:a?")
 	}
 	if req.Subtitles {
-		args = append(args, "-map", "0:s?")
+		if req.Container == "mp4" || req.Container == "mov" {
+			if !isBitmapSubtitle(info.SubtitleCodec) {
+				args = append(args, "-map", "0:s?")
+			}
+		} else {
+			args = append(args, "-map", "0:s?")
+		}
 	}
 
 	// Metadata handling
@@ -1706,7 +1837,11 @@ func buildFFmpegArgs(req ConversionRequest, info MediaInfo, inPath, outPath stri
 		if req.Container == "mkv" {
 			args = append(args, "-c:s", "copy")
 		} else {
-			args = append(args, "-c:s", "mov_text")
+			if isBitmapSubtitle(info.SubtitleCodec) {
+				args = append(args, "-sn")
+			} else {
+				args = append(args, "-c:s", "mov_text")
+			}
 		}
 	} else {
 		args = append(args, "-sn")
@@ -1721,6 +1856,10 @@ func buildFFmpegArgs(req ConversionRequest, info MediaInfo, inPath, outPath stri
 }
 
 func qualityToCRF(codec, quality string) string {
+	quality = strings.TrimSpace(quality)
+	if _, err := strconv.ParseFloat(quality, 64); err == nil {
+		return quality
+	}
 	table := map[string]map[string]string{
 		"h264": {
 			"low": "28", "normal": "23", "high": "18", "very_high": "14",
@@ -1736,6 +1875,15 @@ func qualityToCRF(codec, quality string) string {
 		return v
 	}
 	return map[string]string{"h264": "23", "h265": "28", "av1": "40"}[codec]
+}
+
+func isBitmapSubtitle(codec string) bool {
+	switch strings.ToLower(strings.TrimSpace(codec)) {
+	case "hdmv_pgs_subtitle", "dvd_subtitle", "dvdsub", "pgssub", "xsub", "dvb_subtitle", "dvb_teletext":
+		return true
+	default:
+		return false
+	}
 }
 
 func encoderPreset(codec, uiPreset string) string {
@@ -1841,9 +1989,16 @@ func probeMedia(ctx context.Context, path string) (MediaInfo, error) {
 		}
 		if s.CodecType == "subtitle" {
 			info.HasSubtitles = true
+			if info.SubtitleCodec == "" {
+				info.SubtitleCodec = s.CodecName
+			}
 			continue
 		}
 		if s.CodecType != "video" {
+			continue
+		}
+		if info.VideoCodec != "" {
+			// Primary video stream already recorded; ignore attached picture/cover streams
 			continue
 		}
 		info.VideoCodec = s.CodecName
@@ -1874,7 +2029,6 @@ func probeMedia(ctx context.Context, path string) (MediaInfo, error) {
 		if t == "smpte2084" || t == "arib-std-b67" || p == "bt2020" || strings.Contains(c, "2020") {
 			info.IsHDR = true
 		}
-		break
 	}
 	return info, nil
 }
@@ -2744,6 +2898,7 @@ func validateRequest(req *ConversionRequest) error {
 	validPreset := map[string]bool{"fast": true, "medium": true, "slow": true}
 	validFPS := map[string]bool{"copy": true}
 	validMetadata := map[string]bool{"copy": true, "remove": true}
+	validTonemap := map[string]bool{"": true, "none": true, "hable": true, "mobius": true, "reinhard": true, "clip": true}
 
 	if req.FileName == "" && req.FilePath != "" {
 		req.FileName = filepath.Base(req.FilePath)
@@ -2766,12 +2921,17 @@ func validateRequest(req *ConversionRequest) error {
 		return errors.New("unsupported preset")
 	case !validMetadata[req.Metadata]:
 		return errors.New("unsupported metadata mode")
+	case !validTonemap[req.Tonemap]:
+		return errors.New("unsupported tonemap algorithm")
 	}
 
 	if req.QualityCRF != "bitrate" {
-		crf, err := strconv.ParseFloat(req.QualityCRF, 64)
-		if err != nil || crf < 0 || crf > 51 {
-			return errors.New("unsupported quality crf")
+		tablePresets := map[string]bool{"low": true, "normal": true, "high": true, "very_high": true}
+		if !tablePresets[req.QualityCRF] {
+			crf, err := strconv.ParseFloat(req.QualityCRF, 64)
+			if err != nil || crf < 0 || crf > 51 {
+				return errors.New("unsupported quality crf")
+			}
 		}
 	}
 
@@ -2963,9 +3123,15 @@ func probeRemoteMedia(ctx context.Context, cfg Config, cookie, appAPIAuth, remot
 		}
 		if s.CodecType == "subtitle" {
 			info.HasSubtitles = true
+			if info.SubtitleCodec == "" {
+				info.SubtitleCodec = s.CodecName
+			}
 			continue
 		}
 		if s.CodecType != "video" {
+			continue
+		}
+		if info.VideoCodec != "" {
 			continue
 		}
 
@@ -3037,7 +3203,10 @@ func sendNotification(cfg Config, userID, subject, message string) {
 
 	// Override the auth header to encode userID:secret so AppAPI knows which user to notify.
 	client := newHTTPClient(cfg.InsecureTLS)
-	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	reqCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		log.Printf("sendNotification: request build error: %v", err)
 		return

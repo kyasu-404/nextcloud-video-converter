@@ -19,7 +19,7 @@ services:
       # === AppAPI standard env vars (injected automatically by HaRP in production) ===
       APP_ID: "video_converter_exapp"
       APP_SECRET: "video_converter_secret_12345"
-      APP_VERSION: "1.0.2"
+      APP_VERSION: "1.0.19"
       APP_DISPLAY_NAME: "Video Converter"
       # APP_HOST is the container hostname used by HaRP to route requests.
       # In manual mode it is not used by the app itself.
@@ -31,7 +31,7 @@ services:
       AA_VERSION: "4.0.0"
 
       # === Nextcloud connection ===
-      NEXTCLOUD_URL: "https://nc.kyasu.site"
+      NEXTCLOUD_URL: "${NEXTCLOUD_URL:-http://nextcloud.local}"
 
       # === Manual-install registration (only needed for dev/manual mode) ===
       # Remove or leave blank to run in HaRP mode (UI registered via PUT /enabled).

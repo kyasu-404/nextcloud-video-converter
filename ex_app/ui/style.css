@@ -347,9 +347,6 @@
   transition: width .35s ease;
 }
 
-#notif_banner {
-  display: none !important;
-}
 
 @media (max-width: 1120px) {
   .vc-app .grid {

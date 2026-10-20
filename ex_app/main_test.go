@@ -185,3 +185,113 @@ func hasArg(args []string, key string) bool {
 	}
 	return false
 }
+
+func TestQualityToCRF_NumericAndPresets(t *testing.T) {
+	tests := []struct {
+		codec   string
+		quality string
+		want    string
+	}{
+		{"h264", "18", "18"},
+		{"h264", "23", "23"},
+		{"h264", "28", "28"},
+		{"h264", "32", "32"},
+		{"h264", "low", "28"},
+		{"h264", "high", "18"},
+		{"h265", "20", "20"},
+		{"h265", "normal", "28"},
+		{"av1", "30", "30"},
+		{"av1", "normal", "40"},
+	}
+
+	for _, tt := range tests {
+		got := qualityToCRF(tt.codec, tt.quality)
+		if got != tt.want {
+			t.Errorf("qualityToCRF(%q, %q) = %q, want %q", tt.codec, tt.quality, got, tt.want)
+		}
+	}
+}
+
+func TestValidateRequest_Tonemap(t *testing.T) {
+	baseReq := ConversionRequest{
+		FileID:       "file-123",
+		FilePath:     "/test.mp4",
+		Container:    "mp4",
+		VideoCodec:   "h264",
+		Resolution:   "original",
+		QualityCRF:   "23",
+		HDRMode:      "sdr",
+		AudioCodec:   "aac",
+		BitDepth:     "8",
+		Preset:       "medium",
+		FPS:          "copy",
+		Metadata:     "copy",
+	}
+
+	validReq := baseReq
+	validReq.Tonemap = "hable"
+	if err := validateRequest(&validReq); err != nil {
+		t.Fatalf("expected valid tonemap 'hable' to pass, got: %v", err)
+	}
+
+	invalidReq := baseReq
+	invalidReq.Tonemap = "hable:desat=0,drawtext=evil"
+	if err := validateRequest(&invalidReq); err == nil {
+		t.Fatalf("expected injection tonemap to be rejected, but it passed")
+	}
+}
+
+func TestBuildFFmpegArgs_BitmapSubtitles(t *testing.T) {
+	req := ConversionRequest{
+		Container:    "mp4",
+		VideoCodec:   "h264",
+		AudioCodec:   "aac",
+		Subtitles:    true,
+		Metadata:     "copy",
+		QualityCRF:   "23",
+		Resolution:   "original",
+		HDRMode:      "copy",
+		BitDepth:     "8",
+	}
+
+	// 1. Text subtitles (e.g. subrip / srt) should use mov_text in MP4
+	textInfo := MediaInfo{
+		HasSubtitles:  true,
+		SubtitleCodec: "subrip",
+	}
+	args, err := buildFFmpegArgs(req, textInfo, "in.mkv", "out.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasArgPair(args, "-c:s", "mov_text") {
+		t.Errorf("expected -c:s mov_text for text subtitles in mp4, got args %v", args)
+	}
+
+	// 2. Bitmap subtitles (e.g. hdmv_pgs_subtitle) should drop subtitles to avoid ffmpeg crash in MP4
+	bitmapInfo := MediaInfo{
+		HasSubtitles:  true,
+		SubtitleCodec: "hdmv_pgs_subtitle",
+	}
+	argsBitmap, err := buildFFmpegArgs(req, bitmapInfo, "in.mkv", "out.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasArgPair(argsBitmap, "-c:s", "mov_text") {
+		t.Errorf("did not expect mov_text for bitmap subtitles in mp4, got args %v", argsBitmap)
+	}
+	if !hasArg(argsBitmap, "-sn") {
+		t.Errorf("expected -sn to drop bitmap subtitles in mp4, got args %v", argsBitmap)
+	}
+
+	// 3. For MKV container, bitmap subtitles can be copied safely
+	reqMKV := req
+	reqMKV.Container = "mkv"
+	argsMKV, err := buildFFmpegArgs(reqMKV, bitmapInfo, "in.mkv", "out.mkv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasArgPair(argsMKV, "-c:s", "copy") {
+		t.Errorf("expected -c:s copy for bitmap subtitles in mkv, got args %v", argsMKV)
+	}
+}
+
