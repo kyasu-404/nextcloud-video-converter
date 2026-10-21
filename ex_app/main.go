@@ -42,11 +42,6 @@ var (
 		m map[string]*Task
 	}{m: make(map[string]*Task)}
 
-	cancelFuncs = struct {
-		sync.Mutex
-		m map[string]context.CancelFunc
-	}{m: make(map[string]context.CancelFunc)}
-
 	globalAppAPIAuth string
 	globalAppAPIUser string
 	globalAuthMutex  sync.RWMutex
@@ -242,7 +237,7 @@ type ConversionRequest struct {
 	Cookie       string `json:"-"` // Used for Nextcloud session authentication
 	AppAPIAuth   string `json:"-"` // User-scoped AppAPI credential for background WebDAV requests
 	RequestToken string `json:"requesttoken"`
-	UserID       string `json:"user_id"`
+	UserID       string `json:"-"` // Set only from authenticated request credentials.
 }
 
 type ActionPayload struct {
@@ -287,6 +282,8 @@ type Task struct {
 	UserID       string    `json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	cancel       context.CancelFunc
+	cancelled    bool
 }
 
 func main() {
@@ -314,10 +311,10 @@ func main() {
 	mux.HandleFunc("/api/convert", makeConvertHandler(cfg))
 	mux.HandleFunc("/api/task/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/cancel") {
-			makeCancelHandler()(w, r)
+			makeCancelHandler(cfg)(w, r)
 			return
 		}
-		taskHandler(w, r)
+		makeTaskHandler(cfg)(w, r)
 	})
 
 	srv := &http.Server{
@@ -407,12 +404,14 @@ func main() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		cancelFuncs.Lock()
-		for id, cancelFn := range cancelFuncs.m {
-			log.Printf("Cancelling in-flight task %s", id)
-			cancelFn()
+		taskStore.RLock()
+		for id, task := range taskStore.m {
+			if task.cancel != nil {
+				log.Printf("Cancelling in-flight task %s", id)
+				task.cancel()
+			}
 		}
-		cancelFuncs.Unlock()
+		taskStore.RUnlock()
 
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Printf("server shutdown error: %v", err)
@@ -953,12 +952,13 @@ func makeActionHandler(cfg Config) http.HandlerFunc {
 			}
 		}
 
-		userID := userIDFromPayload(payload)
-		if userID == "" {
-			userID = userIDFromAppAPIAuth(r.Header.Get("AUTHORIZATION-APP-API"))
+		userID, err := requestUserID(cfg, r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
 		}
 		if err := requireAppAccess(r.Context(), cfg, r.Header.Get("AUTHORIZATION-APP-API"), userID); err != nil {
-			http.Error(w, err.Error(), http.StatusForbidden)
+			http.Error(w, err.Error(), accessErrorStatus(err))
 			return
 		}
 
@@ -1086,9 +1086,13 @@ func makeUIHandler(cfg Config) http.HandlerFunc {
 		}
 
 		appAPIAuth := r.Header.Get("AUTHORIZATION-APP-API")
-		userID := userIDFromAppAPIAuth(appAPIAuth)
+		userID, err := requestUserID(cfg, r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
 		if err := requireAppAccess(r.Context(), cfg, appAPIAuth, userID); err != nil {
-			http.Error(w, err.Error(), http.StatusForbidden)
+			http.Error(w, err.Error(), accessErrorStatus(err))
 			return
 		}
 
@@ -1168,12 +1172,15 @@ func makeConvertHandler(cfg Config) http.HandlerFunc {
 		// Save the user's session cookie for WebDAV authentication
 		req.Cookie = r.Header.Get("Cookie")
 		req.AppAPIAuth = r.Header.Get("AUTHORIZATION-APP-API")
-		if req.UserID == "" {
-			req.UserID = userIDFromAppAPIAuth(req.AppAPIAuth)
+		userID, err := requestUserID(cfg, r)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
+			return
 		}
+		req.UserID = userID
 
 		if err := requireAppAccess(r.Context(), cfg, req.AppAPIAuth, req.UserID); err != nil {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error()})
+			writeJSON(w, accessErrorStatus(err), map[string]any{"error": err.Error()})
 			return
 		}
 
@@ -1184,22 +1191,24 @@ func makeConvertHandler(cfg Config) http.HandlerFunc {
 
 		settings, err := getCachedAppSettings(r.Context(), cfg, req.AppAPIAuth)
 		if err != nil {
-			log.Printf("settings read failed before enqueue, using defaults: %v", err)
-			settings = defaultAppSettings()
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": errSettingsUnavailable.Error()})
+			return
 		}
-		if queued := queuedJobsForUser(req.UserID); queued >= settings.MaxQueuedJobsPerUser {
-			writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many queued jobs for user"})
+		reservation, err := conversionGate.reserve(settings, req.UserID)
+		if err != nil {
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": err.Error()})
 			return
 		}
 
-		taskID := newTask(req)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(settings.JobTimeoutMinutes)*time.Minute)
+		taskID := newTask(req, cancel)
 		writeJSON(w, http.StatusAccepted, map[string]any{
 			"status":  "processing",
 			"message": "task queued",
 			"task_id": taskID,
 		})
 
-		go processTask(cfg, taskID, req)
+		go processTask(cfg, taskID, req, ctx, cancel, reservation)
 	}
 }
 
@@ -1225,10 +1234,14 @@ func makeMetadataHandler(cfg Config) http.HandlerFunc {
 
 		cookie := r.Header.Get("Cookie")
 		appAPIAuth := r.Header.Get("AUTHORIZATION-APP-API")
-		userID := userIDFromAppAPIAuth(appAPIAuth)
+		userID, err := requestUserID(cfg, r)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
+			return
+		}
 
 		if err := requireAppAccess(r.Context(), cfg, appAPIAuth, userID); err != nil {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error()})
+			writeJSON(w, accessErrorStatus(err), map[string]any{"error": err.Error()})
 			return
 		}
 
@@ -1242,35 +1255,49 @@ func makeMetadataHandler(cfg Config) http.HandlerFunc {
 	}
 }
 
-func taskHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
+func makeTaskHandler(cfg Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		userID, err := requestUserID(cfg, r)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/api/task/")
+		task, ok := taskSnapshot(id)
+		if !ok || task.UserID != userID {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		writeJSON(w, http.StatusOK, task)
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/api/task/")
-	if id == "" {
-		http.Error(w, "task id required", http.StatusBadRequest)
-		return
-	}
-
-	taskStore.RLock()
-	task, ok := taskStore.m[id]
-	taskStore.RUnlock()
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
-	writeJSON(w, http.StatusOK, task)
 }
 
-func makeCancelHandler() http.HandlerFunc {
+// Copy every field while locked; callers never serialize a live *Task.
+func taskSnapshot(id string) (Task, bool) {
+	taskStore.RLock()
+	defer taskStore.RUnlock()
+	if task, ok := taskStore.m[id]; ok {
+		return *task, true
+	}
+	return Task{}, false
+}
+
+func makeCancelHandler(cfg Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		userID, err := requestUserID(cfg, r)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
 			return
 		}
 		id := strings.TrimPrefix(r.URL.Path, "/api/task/")
@@ -1280,19 +1307,38 @@ func makeCancelHandler() http.HandlerFunc {
 			return
 		}
 
-		cancelFuncs.Lock()
-		if cancel, ok := cancelFuncs.m[id]; ok {
-			cancel()
-			delete(cancelFuncs.m, id)
+		taskStore.Lock()
+		task, ok := taskStore.m[id]
+		if !ok || task.UserID != userID {
+			taskStore.Unlock()
+			http.NotFound(w, r)
+			return
 		}
-		cancelFuncs.Unlock()
-
-		setTaskError(id, "Отменено пользователем")
+		if task.cancelled {
+			taskStore.Unlock()
+			writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
+			return
+		}
+		if task.Status == "Готово" || task.Status == "Ошибка" {
+			taskStore.Unlock()
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "task already finished"})
+			return
+		}
+		task.cancelled = true
+		task.Status = "Ошибка"
+		task.Error = "Отменено пользователем"
+		task.Message = task.Error
+		task.UpdatedAt = time.Now()
+		cancel := task.cancel
+		if cancel != nil {
+			cancel()
+		}
+		taskStore.Unlock()
 		writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 	}
 }
 
-func newTask(req ConversionRequest) string {
+func newTask(req ConversionRequest, cancel context.CancelFunc) string {
 	id := fmt.Sprintf("task-%d", atomic.AddUint64(&taskCounter, 1))
 	task := &Task{
 		ID:        id,
@@ -1303,6 +1349,7 @@ func newTask(req ConversionRequest) string {
 		UserID:    req.UserID,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
+		cancel:    cancel,
 	}
 
 	taskStore.Lock()
@@ -1315,7 +1362,7 @@ func newTask(req ConversionRequest) string {
 func updateTask(id string, fn func(t *Task)) {
 	taskStore.Lock()
 	defer taskStore.Unlock()
-	if t, ok := taskStore.m[id]; ok {
+	if t, ok := taskStore.m[id]; ok && !t.cancelled {
 		fn(t)
 		t.UpdatedAt = time.Now()
 	}
@@ -1339,81 +1386,25 @@ func setTaskStatus(id, status, msg string, progress int) {
 	})
 }
 
-var conversionGate = &jobGate{
-	activeByUser: make(map[string]int),
-}
-
-type jobGate struct {
-	mu           sync.Mutex
-	activeTotal  int
-	activeByUser map[string]int
-}
-
-func (g *jobGate) acquire(ctx context.Context, settings AppSettings, userID string) error {
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		g.mu.Lock()
-		canRun := g.activeTotal < settings.MaxConcurrentJobs && g.activeByUser[userID] < settings.MaxConcurrentJobsPerUser
-		if canRun {
-			g.activeTotal++
-			g.activeByUser[userID]++
-			g.mu.Unlock()
-			return nil
-		}
-		g.mu.Unlock()
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		}
-	}
-}
-
-func (g *jobGate) release(userID string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.activeTotal > 0 {
-		g.activeTotal--
-	}
-	if g.activeByUser[userID] > 0 {
-		g.activeByUser[userID]--
-	}
-}
-
-func queuedJobsForUser(userID string) int {
-	taskStore.RLock()
-	defer taskStore.RUnlock()
-
-	count := 0
-	for _, task := range taskStore.m {
-		if task.UserID == userID && task.Status == "В очереди" {
-			count++
-		}
-	}
-	return count
-}
-
-func processTask(cfg Config, taskID string, req ConversionRequest) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancelFuncs.Lock()
-	cancelFuncs.m[taskID] = cancel
-	cancelFuncs.Unlock()
-
+func processTask(cfg Config, taskID string, req ConversionRequest, ctx context.Context, cancel context.CancelFunc, reservation *jobReservation) {
 	defer func() {
-		cancelFuncs.Lock()
-		delete(cancelFuncs.m, taskID)
-		cancelFuncs.Unlock()
-		cancel()
 		if r := recover(); r != nil {
 			setTaskError(taskID, fmt.Sprintf("panic: %v", r))
 		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			if task, ok := taskSnapshot(taskID); ok && task.Status != "Готово" {
+				setTaskError(taskID, "Превышено время ожидания или выполнения задачи")
+			}
+		}
+		cancel()
+		reservation.release()
+		taskStore.Lock()
+		if task, ok := taskStore.m[taskID]; ok {
+			task.cancel = nil
+		}
+		taskStore.Unlock()
 
-		taskStore.RLock()
-		task, ok := taskStore.m[taskID]
-		taskStore.RUnlock()
+		task, ok := taskSnapshot(taskID)
 		if ok && req.UserID != "" {
 			if task.Status == "Ошибка" {
 				sendNotification(cfg, req.UserID, "Ошибка конвертации", task.Error)
@@ -1430,18 +1421,7 @@ func processTask(cfg Config, taskID string, req ConversionRequest) {
 		return
 	}
 
-	settings, err := getCachedAppSettings(ctx, cfg, req.AppAPIAuth)
-	if err != nil {
-		log.Printf("settings read failed, using defaults: %v", err)
-		settings = defaultAppSettings()
-	}
-	if settings.JobTimeoutMinutes > 0 {
-		timeoutCtx, timeoutCancel := context.WithTimeout(ctx, time.Duration(settings.JobTimeoutMinutes)*time.Minute)
-		defer timeoutCancel()
-		ctx = timeoutCtx
-	}
-
-	if err := conversionGate.acquire(ctx, settings, req.UserID); err != nil {
+	if err := reservation.acquire(ctx); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			setTaskError(taskID, "Превышено время ожидания или выполнения задачи")
 		} else {
@@ -1449,8 +1429,7 @@ func processTask(cfg Config, taskID string, req ConversionRequest) {
 		}
 		return
 	}
-	defer conversionGate.release(req.UserID)
-
+	settings := reservation.settings
 	cpuLimit := resolveCPULimit(settings.CPULimitPercent, settings.ThreadsPerJob)
 
 	setTaskStatus(taskID, "Скачивание", "Загрузка файла с сервера...", 5)
@@ -1482,12 +1461,17 @@ func processTask(cfg Config, taskID string, req ConversionRequest) {
 	inFile.Close()
 	defer os.Remove(inPath)
 
-	if err := downloadWebDAV(ctx, client, cfg, req.Cookie, req.AppAPIAuth, req.FilePath, inPath, taskID); err != nil {
+	sourceETag, err := downloadWebDAV(ctx, client, cfg, req.Cookie, req.AppAPIAuth, req.FilePath, inPath, taskID)
+	if err != nil {
 		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "context canceled") {
 			setTaskError(taskID, "Отменено пользователем")
 		} else {
 			setTaskError(taskID, "Ошибка скачивания: "+err.Error())
 		}
+		return
+	}
+	if req.DeleteOriginal && !strongETag(sourceETag) {
+		setTaskError(taskID, "Сервер не предоставил ETag для безопасного удаления оригинала. Отключите удаление оригинала.")
 		return
 	}
 
@@ -1524,10 +1508,14 @@ func processTask(cfg Config, taskID string, req ConversionRequest) {
 		}
 		return
 	}
+	if err := verifyOutputBitDepth(ctx, req, info, outPath); err != nil {
+		setTaskError(taskID, err.Error())
+		return
+	}
 
 	setTaskStatus(taskID, "Загрузка", "Сохранение готового файла в облако...", 90)
-	remoteOut := buildRemoteOutputPath(req.FilePath, req.FileName, req.Container)
-	if err := uploadWebDAV(ctx, client, cfg, req.Cookie, req.AppAPIAuth, req.RequestToken, remoteOut, outPath); err != nil {
+	remoteOut, err := uploadConvertedWebDAV(ctx, client, cfg, req, outPath)
+	if err != nil {
 		if errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "context canceled") {
 			setTaskError(taskID, "Отменено пользователем")
 		} else {
@@ -1538,8 +1526,8 @@ func processTask(cfg Config, taskID string, req ConversionRequest) {
 
 	if req.DeleteOriginal {
 		setTaskStatus(taskID, "Завершение", "Удаление оригинала", 99)
-		if err := deleteWebDAV(ctx, client, cfg, req.Cookie, req.AppAPIAuth, req.RequestToken, req.FilePath); err != nil {
-			setTaskError(taskID, "delete original failed: "+err.Error())
+		if err := deleteWebDAV(ctx, client, cfg, req.Cookie, req.AppAPIAuth, req.RequestToken, req.FilePath, sourceETag); err != nil {
+			setTaskError(taskID, fmt.Sprintf("Оригинал не удалён: %v. Результат сохранён: %s", err, remoteOut))
 			return
 		}
 	}
@@ -1560,6 +1548,7 @@ func runFFmpeg(taskID string, ctx context.Context, args []string, durationSecond
 
 	cmdName, cmdArgs := ffmpegCommand(args, cpuLimit, cpulimitAvailable())
 	cmd := exec.CommandContext(ctx, cmdName, cmdArgs...)
+	configureProcessCancellation(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -1738,6 +1727,10 @@ func buildFFmpegArgs(req ConversionRequest, info MediaInfo, inPath, outPath stri
 		}
 
 		videoFilters := make([]string, 0, 3)
+		pixelFormat, err := outputPixelFormat(req, info)
+		if err != nil {
+			return nil, err
+		}
 
 		if target := targetScaleFilter(req.Resolution); target != "" {
 			videoFilters = append(videoFilters, target)
@@ -1756,7 +1749,7 @@ func buildFFmpegArgs(req ConversionRequest, info MediaInfo, inPath, outPath stri
 					"format=gbrpf32le",
 					"zscale=p=bt709",
 					"zscale=t=bt709:m=bt709:r=tv",
-					"format=yuv420p",
+					"format="+pixelFormat,
 				)
 			} else {
 				videoFilters = append(videoFilters,
@@ -1765,35 +1758,24 @@ func buildFFmpegArgs(req ConversionRequest, info MediaInfo, inPath, outPath stri
 					"zscale=p=bt709",
 					"tonemap=tonemap="+tonemap+":desat=0",
 					"zscale=t=bt709:m=bt709:r=tv",
-					"format=yuv420p",
+					"format="+pixelFormat,
 				)
 			}
 		} else {
-			if req.BitDepth == "10" || req.HDRMode == "hdr" {
-				videoFilters = append(videoFilters, "format=yuv420p10le")
-			} else {
-				videoFilters = append(videoFilters, "format=yuv420p")
-			}
+			videoFilters = append(videoFilters, "format="+pixelFormat)
 		}
 
 		if len(videoFilters) > 0 {
 			args = append(args, "-vf", strings.Join(videoFilters, ","))
 		}
 
-		if req.BitDepth == "10" || req.HDRMode == "hdr" {
-			if info.IsHDR {
-				primaries, trc, space := hdrColorTags(info)
-				args = append(args,
-					"-pix_fmt", "yuv420p10le",
-					"-color_primaries", primaries,
-					"-color_trc", trc,
-					"-colorspace", space,
-				)
-			} else {
-				args = append(args, "-pix_fmt", "yuv420p10le")
+		args = append(args, "-pix_fmt", pixelFormat)
+		if info.IsHDR {
+			primaries, trc, space := hdrColorTags(info)
+			if req.HDRMode == "sdr" {
+				primaries, trc, space = "bt709", "bt709", "bt709"
 			}
-		} else {
-			args = append(args, "-pix_fmt", "yuv420p")
+			args = append(args, "-color_primaries", primaries, "-color_trc", trc, "-colorspace", space)
 		}
 	}
 
@@ -2033,15 +2015,15 @@ func probeMedia(ctx context.Context, path string) (MediaInfo, error) {
 	return info, nil
 }
 
-func downloadWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, appAPIAuth, remotePath, localPath string, taskID string) error {
+func downloadWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, appAPIAuth, remotePath, localPath string, taskID string) (string, error) {
 	u, err := buildWebDAVURL(cfg, remotePath)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if appAPIAuth != "" {
 		setAppAPIRequestHeaders(req, cfg, appAPIAuth)
@@ -2053,18 +2035,18 @@ func downloadWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return fmt.Errorf("webdav GET %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("webdav GET %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
 	f, err := os.Create(localPath)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer f.Close()
 
@@ -2083,7 +2065,13 @@ func downloadWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie
 	} else {
 		_, err = io.Copy(f, resp.Body)
 	}
-	return err
+	if err != nil {
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
+	return resp.Header.Get("ETag"), nil
 }
 
 // progressReader wraps an io.Reader and updates task progress during copy.
@@ -2140,6 +2128,9 @@ func uploadWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, 
 		req.SetBasicAuth(cfg.NextcloudUser, cfg.NextcloudPass)
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
+	// The precondition is evaluated atomically by WebDAV, including when two
+	// conversions choose the same output name at the same time.
+	req.Header.Set("If-None-Match", "*")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -2147,6 +2138,9 @@ func uploadWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, 
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusPreconditionFailed {
+		return errOutputExists
+	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		return fmt.Errorf("webdav PUT %s: %s", resp.Status, strings.TrimSpace(string(body)))
@@ -2154,7 +2148,10 @@ func uploadWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, 
 	return nil
 }
 
-func deleteWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, appAPIAuth, requestToken, remotePath string) error {
+func deleteWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, appAPIAuth, requestToken, remotePath, etag string) error {
+	if !strongETag(etag) {
+		return errors.New("cannot safely delete source without a strong ETag")
+	}
 	u, err := buildWebDAVURL(cfg, remotePath)
 	if err != nil {
 		return err
@@ -2164,6 +2161,7 @@ func deleteWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, 
 	if err != nil {
 		return err
 	}
+	req.Header.Set("If-Match", etag)
 	if appAPIAuth != "" {
 		setAppAPIRequestHeaders(req, cfg, appAPIAuth)
 	} else if cookie != "" {
@@ -2183,6 +2181,9 @@ func deleteWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, 
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil
+	}
+	if resp.StatusCode == http.StatusPreconditionFailed {
+		return errors.New("source changed during conversion; the current original was preserved")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
@@ -2293,11 +2294,18 @@ func getAppConfigValues(ctx context.Context, cfg Config, keys []string, authValu
 
 	var wrapped struct {
 		OCS struct {
+			Meta struct {
+				Status     string `json:"status"`
+				StatusCode int    `json:"statuscode"`
+			} `json:"meta"`
 			Data json.RawMessage `json:"data"`
 		} `json:"ocs"`
 	}
 	if err := json.Unmarshal(respBody, &wrapped); err != nil {
 		return nil, err
+	}
+	if wrapped.OCS.Meta.Status == "failure" || wrapped.OCS.Meta.StatusCode >= 400 {
+		return nil, errors.New("AppConfig returned an OCS error")
 	}
 
 	data := wrapped.OCS.Data
@@ -2504,8 +2512,8 @@ func userIDFromPayload(payload map[string]any) string {
 func requireAppAccess(ctx context.Context, cfg Config, authValue, userID string) error {
 	settings, err := getCachedAppSettings(ctx, cfg, authValue)
 	if err != nil {
-		log.Printf("settings read failed during access check, using defaults: %v", err)
-		settings = defaultAppSettings()
+		log.Printf("settings read failed during access check: %v", err)
+		return errSettingsUnavailable
 	}
 	if len(settings.AllowedGroups) == 0 {
 		return nil
@@ -3029,6 +3037,8 @@ func bitDepthFromPixelFormat(pixFmt, rawBits string) string {
 	}
 	pixFmt = strings.ToLower(pixFmt)
 	switch {
+	case strings.Contains(pixFmt, "16"):
+		return "16 bit"
 	case strings.Contains(pixFmt, "12"):
 		return "12 bit"
 	case strings.Contains(pixFmt, "10"):

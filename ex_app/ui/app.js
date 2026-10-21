@@ -451,8 +451,7 @@ form.addEventListener('submit', async (e) => {
     fast_start: document.getElementById('fast_start').checked,
     delete_original: document.getElementById('delete_original').checked,
     bit_depth: useAdv ? value('bit_depth') : 'copy',
-    requesttoken: (window.OC && window.OC.requestToken) ? window.OC.requestToken : '',
-    user_id: (window.OC && window.OC.currentUser) ? window.OC.currentUser : ''
+    requesttoken: (window.OC && window.OC.requestToken) ? window.OC.requestToken : ''
   };
 
   try {

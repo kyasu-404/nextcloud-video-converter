@@ -20,9 +20,11 @@ The ExApp side in this repository exposes:
 - `POST /init`
 - `GET /enabled`
 - `POST /action/file`
-- `GET /ui/convert`
+- `GET /ui/convert.html`
+- `POST /api/metadata`
 - `POST /api/convert`
 - `GET /api/task/{id}`
+- `POST /api/task/{id}/cancel`
 
 ## Admin settings
 
@@ -31,13 +33,16 @@ On enable, the ExApp registers AppAPI declarative admin settings under the ExApp
 - `allowed_groups` - selected Nextcloud group IDs. Empty means all logged-in users can use the converter.
 - `max_concurrent_jobs` - total concurrent conversions; default is `1`.
 - `max_concurrent_jobs_per_user` - concurrent conversions per user; default is `1`.
-- `max_queued_jobs_per_user` - queued conversions per user; default is `3`.
+- `max_queued_jobs_per_user` - waiting conversions per user; default is `3`. Set to `0` to accept only jobs that can start immediately.
 - `job_timeout_minutes` - job timeout in minutes; default is `120`.
 - `cpu_limit_percent` - maximum ffmpeg CPU budget from `1` to `100`; default is `50`.
 - `threads_per_job` - ffmpeg threads per job; default is `0`, which leaves thread selection unrestricted.
 
 Group access is enforced by the ExApp on `/action/file`, `/ui/convert.html`, `/api/metadata`, and `/api/convert`.
+If the settings service is unavailable, these endpoints return HTTP 503 instead of dropping group restrictions.
+The authenticated user owns the conversion; user IDs supplied in JSON are ignored. Only the owner can read or cancel a task.
 CPU limiting is applied with `cpulimit`; `threads_per_job` adds ffmpeg `-threads` only when it is greater than `0`.
+On Linux, cancellation and job timeouts stop the complete encoder process group, including `cpulimit` children.
 If AppAPI calls `/enabled` without a user context, set `settings_admin_user` in AppConfig to a Nextcloud admin user so the ExApp can populate group options.
 
 ## Build and run locally
@@ -55,6 +60,9 @@ docker compose up -d
 - `NEXTCLOUD_BASE_PATH` — WebDAV base path, for example `/remote.php/dav/files/converter/`
 - `OUTPUT_DIR` — local temp folder for ffmpeg work files
 - `NEXTCLOUD_INSECURE_TLS` — set to `true` only for self-signed test setups
+- `APP_SECRET` — shared AppAPI secret, injected automatically by AppAPI/HaRP; required to verify incoming AppAPI user credentials
+
+For direct requests in manual mode, authenticate with HTTP Basic using `NEXTCLOUD_USER` and `NEXTCLOUD_APP_PASSWORD`. A JSON user ID or a session cookie alone does not authenticate a direct request to the ExApp.
 
 ## File Actions Menu
 
@@ -68,7 +76,25 @@ The payload that AppAPI forwards to the ExApp includes:
 - `mime`
 - `userId`
 
-The `/action/file` endpoint in this app turns that payload into a redirect to `/ui/convert`, where the user can choose the conversion settings.
+The `/action/file` endpoint in this app opens the embedded conversion page, where the user can choose the conversion settings.
+
+## File preservation
+
+Converted files are created with a WebDAV `If-None-Match: *` precondition. If `source_converted.mp4` already exists, the app tries `source_converted (2).mp4`, then the next available number. Existing results are never overwritten.
+
+Deleting the original requires the strong ETag returned by its download. The subsequent DELETE uses `If-Match`, so a file changed during conversion is preserved. If deletion fails, the task error includes the saved output path. If the server provides no strong ETag, disable deletion to convert while retaining the original.
+
+The original bit-depth option preserves source precision. If the selected encoder cannot preserve it, choose an explicit supported depth rather than silently losing precision.
+
+## Tests
+
+```bash
+go test ./...
+go vet ./...
+go test -race ./...
+```
+
+Race detection requires a C compiler. Media lifecycle tests run real FFmpeg/ffprobe when installed and otherwise skip those checks. Linux tests exercise cancellation both directly and through a wrapper process; set `VC_TEST_CPULIMIT_BIN` to an installed cpulimit executable to test it as well.
 
 ## Notes
 
