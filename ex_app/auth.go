@@ -31,10 +31,3 @@ func requestUserID(cfg Config, r *http.Request) (string, error) {
 }
 
 var errSettingsUnavailable = errors.New("Video Converter settings are unavailable")
-
-func accessErrorStatus(err error) int {
-	if errors.Is(err, errSettingsUnavailable) {
-		return http.StatusServiceUnavailable
-	}
-	return http.StatusForbidden
-}

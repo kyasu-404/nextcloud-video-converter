@@ -90,14 +90,6 @@ func TestBuildFFmpegArgsAudioCodecs(t *testing.T) {
 	}
 }
 
-func TestParseAllowedGroupsValue(t *testing.T) {
-	got := parseAllowedGroupsValue("video-editors, admin; video-editors\nmedia")
-	want := []string{"video-editors", "admin", "media"}
-	if !sameStrings(got, want) {
-		t.Fatalf("parseAllowedGroupsValue() = %#v, want %#v", got, want)
-	}
-}
-
 func TestParsePositiveIntValue(t *testing.T) {
 	tests := []struct {
 		name  string

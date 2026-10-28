@@ -60,8 +60,6 @@ const (
 	accessSettingsFormID            = "video_converter_access"
 	queueSettingsFormID             = "video_converter_queue_limits"
 	ffmpegSettingsFormID            = "video_converter_ffmpeg_performance"
-	allowedGroupsKey                = "allowed_groups"
-	settingsAdminUserKey            = "settings_admin_user"
 	maxConcurrentJobsKey            = "max_concurrent_jobs"
 	maxConcurrentJobsPerUserKey     = "max_concurrent_jobs_per_user"
 	maxQueuedJobsPerUserKey         = "max_queued_jobs_per_user"
@@ -183,7 +181,6 @@ type Config struct {
 }
 
 type AppSettings struct {
-	AllowedGroups            []string
 	MaxConcurrentJobs        int
 	MaxConcurrentJobsPerUser int
 	MaxQueuedJobsPerUser     int
@@ -436,7 +433,7 @@ func loadConfig() Config {
 		InsecureTLS: envBool("NEXTCLOUD_INSECURE_TLS", false),
 		AppID:       env("APP_ID", "video_converter_exapp"),
 		AppSecret:   env("APP_SECRET", ""),
-		AppVersion:  env("APP_VERSION", "1.0.19"),
+		AppVersion:  env("APP_VERSION", "1.0.20"),
 		AAVersion:   env("AA_VERSION", "4.0.0"),
 	}
 }
@@ -776,50 +773,14 @@ func registerDeclarativeAdminSettings(cfg Config) error {
 		log.Printf("legacy declarative settings cleanup failed: %v", err)
 	}
 
-	ctx := context.Background()
-	authValue := getAppAPIAuth()
-	if err := normalizeAllowedGroupsConfig(ctx, cfg, authValue); err != nil {
-		log.Printf("allowed groups config normalization failed: %v", err)
-	}
-	groupOptions, err := fetchGroupOptions(ctx, cfg, authValue)
-	if err != nil {
-		log.Printf("group list fetch failed with current AppAPI auth: %v", err)
-		if adminUser := getSettingsAdminUser(ctx, cfg, authValue); adminUser != "" {
-			if adminOptions, adminErr := fetchGroupOptions(ctx, cfg, appAPIAuthForUser(cfg, adminUser)); adminErr == nil {
-				groupOptions = adminOptions
-			} else {
-				log.Printf("group list fetch failed with settings_admin_user=%s: %v", adminUser, adminErr)
-				groupOptions = fallbackGroupOptionsFromConfig(ctx, cfg, authValue)
-			}
-		} else {
-			groupOptions = fallbackGroupOptionsFromConfig(ctx, cfg, authValue)
-		}
+	// The group access form was removed: it could be registered with no options
+	// when the group list was unavailable, which made Nextcloud reject the schema
+	// and break the admin settings page. Drop any previously registered copy.
+	if err := unregisterDeclarativeSettingsForm(cfg, accessSettingsFormID); err != nil {
+		log.Printf("access declarative settings cleanup failed: %v", err)
 	}
 
 	forms := []map[string]any{
-		{
-			"id":           accessSettingsFormID,
-			"priority":     30,
-			"section_type": "admin",
-			"section_id":   "declarative_settings",
-			"title":        "Access",
-			"description":  "Choose which Nextcloud groups can use Video Converter.",
-			"doc_url":      "",
-			"fields": []map[string]any{
-				{
-					"id":          allowedGroupsKey,
-					"title":       "Allowed groups",
-					"type":        "multi-select",
-					"default":     []string{},
-					"description": "Leave empty to allow all users. Select one or more existing Nextcloud groups.",
-					"placeholder": "Select groups",
-					"label":       "",
-					"notify":      false,
-					"sensitive":   false,
-					"options":     groupOptions,
-				},
-			},
-		},
 		{
 			"id":           queueSettingsFormID,
 			"priority":     40,
@@ -952,16 +913,10 @@ func makeActionHandler(cfg Config) http.HandlerFunc {
 			}
 		}
 
-		userID, err := requestUserID(cfg, r)
-		if err != nil {
+		if _, err := requestUserID(cfg, r); err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
-		if err := requireAppAccess(r.Context(), cfg, r.Header.Get("AUTHORIZATION-APP-API"), userID); err != nil {
-			http.Error(w, err.Error(), accessErrorStatus(err))
-			return
-		}
-
 		// Безопасно конвертируем числовой fileId в строку
 		fileID := fmt.Sprintf("%v", payload["fileId"])
 		if fileID == "<nil>" || fileID == "" {
@@ -1085,14 +1040,8 @@ func makeUIHandler(cfg Config) http.HandlerFunc {
 			return
 		}
 
-		appAPIAuth := r.Header.Get("AUTHORIZATION-APP-API")
-		userID, err := requestUserID(cfg, r)
-		if err != nil {
+		if _, err := requestUserID(cfg, r); err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
-			return
-		}
-		if err := requireAppAccess(r.Context(), cfg, appAPIAuth, userID); err != nil {
-			http.Error(w, err.Error(), accessErrorStatus(err))
 			return
 		}
 
@@ -1179,11 +1128,6 @@ func makeConvertHandler(cfg Config) http.HandlerFunc {
 		}
 		req.UserID = userID
 
-		if err := requireAppAccess(r.Context(), cfg, req.AppAPIAuth, req.UserID); err != nil {
-			writeJSON(w, accessErrorStatus(err), map[string]any{"error": err.Error()})
-			return
-		}
-
 		if err := validateRequest(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
@@ -1234,14 +1178,8 @@ func makeMetadataHandler(cfg Config) http.HandlerFunc {
 
 		cookie := r.Header.Get("Cookie")
 		appAPIAuth := r.Header.Get("AUTHORIZATION-APP-API")
-		userID, err := requestUserID(cfg, r)
-		if err != nil {
+		if _, err := requestUserID(cfg, r); err != nil {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
-			return
-		}
-
-		if err := requireAppAccess(r.Context(), cfg, appAPIAuth, userID); err != nil {
-			writeJSON(w, accessErrorStatus(err), map[string]any{"error": err.Error()})
 			return
 		}
 
@@ -2194,7 +2132,6 @@ func deleteWebDAV(ctx context.Context, client *http.Client, cfg Config, cookie, 
 
 func defaultAppSettings() AppSettings {
 	return AppSettings{
-		AllowedGroups:            nil,
 		MaxConcurrentJobs:        defaultMaxConcurrentJobs,
 		MaxConcurrentJobsPerUser: defaultMaxConcurrentJobsPerUser,
 		MaxQueuedJobsPerUser:     defaultMaxQueuedJobsPerUser,
@@ -2237,7 +2174,6 @@ func readAppSettings(ctx context.Context, cfg Config, authValue string) (AppSett
 	}
 
 	values, err := getAppConfigValues(ctx, cfg, []string{
-		allowedGroupsKey,
 		maxConcurrentJobsKey,
 		maxConcurrentJobsPerUserKey,
 		maxQueuedJobsPerUserKey,
@@ -2250,9 +2186,6 @@ func readAppSettings(ctx context.Context, cfg Config, authValue string) (AppSett
 		return settings, err
 	}
 
-	if raw, ok := values[allowedGroupsKey]; ok {
-		settings.AllowedGroups = parseAllowedGroupsValue(raw)
-	}
 	if raw, ok := values[maxConcurrentJobsKey]; ok {
 		settings.MaxConcurrentJobs = parsePositiveIntValue(raw, defaultMaxConcurrentJobs, 1, 100)
 	}
@@ -2348,38 +2281,6 @@ func setAppConfigValue(ctx context.Context, cfg Config, key string, value any, a
 	return err
 }
 
-func normalizeAllowedGroupsConfig(ctx context.Context, cfg Config, authValue string) error {
-	values, err := getAppConfigValues(ctx, cfg, []string{allowedGroupsKey}, authValue)
-	if err != nil {
-		return err
-	}
-	raw, ok := values[allowedGroupsKey]
-	if !ok {
-		return nil
-	}
-
-	rawString, ok := raw.(string)
-	if !ok {
-		return nil
-	}
-	rawString = strings.TrimSpace(rawString)
-	if rawString == "" {
-		return nil
-	}
-
-	var decoded []string
-	if strings.HasPrefix(rawString, "[") && json.Unmarshal([]byte(rawString), &decoded) == nil {
-		return nil
-	}
-
-	groups := parseAllowedGroupsValue(rawString)
-	normalized, err := json.Marshal(groups)
-	if err != nil {
-		return err
-	}
-	return setAppConfigValue(ctx, cfg, allowedGroupsKey, string(normalized), authValue)
-}
-
 func postOCSJSONResponse(ctx context.Context, cfg Config, endpoint string, body []byte, authValue string) ([]byte, error) {
 	client := newHTTPClient(cfg.InsecureTLS)
 	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -2405,57 +2306,6 @@ func postOCSJSONResponse(ctx context.Context, cfg Config, endpoint string, body 
 		return nil, fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(respBody)))
 	}
 	return respBody, nil
-}
-
-func parseAllowedGroupsValue(value any) []string {
-	switch v := value.(type) {
-	case string:
-		v = strings.TrimSpace(v)
-		if v == "" {
-			return nil
-		}
-		var decoded []string
-		if strings.HasPrefix(v, "[") && json.Unmarshal([]byte(v), &decoded) == nil {
-			return cleanStringList(decoded)
-		}
-		return splitGroupList(v)
-	case []string:
-		return cleanStringList(v)
-	case []any:
-		groups := make([]string, 0, len(v))
-		for _, item := range v {
-			if s, ok := item.(string); ok {
-				groups = append(groups, s)
-			}
-		}
-		return cleanStringList(groups)
-	default:
-		return nil
-	}
-}
-
-func splitGroupList(value string) []string {
-	fields := strings.FieldsFunc(value, func(r rune) bool {
-		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == '\t'
-	})
-	return cleanStringList(fields)
-}
-
-func cleanStringList(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	cleaned := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		cleaned = append(cleaned, value)
-	}
-	return cleaned
 }
 
 func parsePositiveIntValue(value any, fallback, min, max int) int {
@@ -2507,169 +2357,6 @@ func userIDFromPayload(payload map[string]any) string {
 		return s
 	}
 	return ""
-}
-
-func requireAppAccess(ctx context.Context, cfg Config, authValue, userID string) error {
-	settings, err := getCachedAppSettings(ctx, cfg, authValue)
-	if err != nil {
-		log.Printf("settings read failed during access check: %v", err)
-		return errSettingsUnavailable
-	}
-	if len(settings.AllowedGroups) == 0 {
-		return nil
-	}
-	if userID == "" {
-		return errors.New("Video Converter is restricted to selected groups")
-	}
-
-	userGroups, err := getUserGroups(ctx, cfg, userID, authValue)
-	if err != nil {
-		return fmt.Errorf("cannot verify Video Converter group access: %w", err)
-	}
-	if stringListsIntersect(settings.AllowedGroups, userGroups) {
-		return nil
-	}
-	return errors.New("Video Converter is not enabled for your group")
-}
-
-func getUserGroups(ctx context.Context, cfg Config, userID, authValue string) ([]string, error) {
-	if cfg.NextcloudURL == "" || authValue == "" || userID == "" {
-		return nil, errors.New("missing Nextcloud URL, AppAPI auth, or user id")
-	}
-
-	userEndpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/cloud/users/"+url.PathEscape(userID))
-	if err != nil {
-		return nil, err
-	}
-	if respBody, err := getOCSJSONResponse(ctx, cfg, userEndpoint, authValue); err == nil {
-		if groups, parseErr := parseGroupsFromOCSResponse(respBody); parseErr == nil {
-			return groups, nil
-		}
-	}
-
-	groupsEndpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/cloud/users/"+url.PathEscape(userID)+"/groups")
-	if err != nil {
-		return nil, err
-	}
-	respBody, err := getOCSJSONResponse(ctx, cfg, groupsEndpoint, authValue)
-	if err != nil {
-		return nil, err
-	}
-	return parseGroupsFromOCSResponse(respBody)
-}
-
-func getOCSJSONResponse(ctx context.Context, cfg Config, endpoint, authValue string) ([]byte, error) {
-	client := newHTTPClient(cfg.InsecureTLS)
-	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("OCS-APIRequest", "true")
-	setAppAPIRequestHeaders(req, cfg, authValue)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(respBody)))
-	}
-	return respBody, nil
-}
-
-func parseGroupsFromOCSResponse(respBody []byte) ([]string, error) {
-	var wrapped struct {
-		OCS struct {
-			Data json.RawMessage `json:"data"`
-		} `json:"ocs"`
-	}
-	if err := json.Unmarshal(respBody, &wrapped); err != nil {
-		return nil, err
-	}
-	data := wrapped.OCS.Data
-	if len(data) == 0 {
-		data = respBody
-	}
-
-	var direct []string
-	if json.Unmarshal(data, &direct) == nil {
-		return cleanStringList(direct), nil
-	}
-	var object struct {
-		Groups []string `json:"groups"`
-	}
-	if err := json.Unmarshal(data, &object); err != nil {
-		return nil, err
-	}
-	return cleanStringList(object.Groups), nil
-}
-
-func fetchGroupOptions(ctx context.Context, cfg Config, authValue string) ([]string, error) {
-	if cfg.NextcloudURL == "" || authValue == "" {
-		return nil, errors.New("missing Nextcloud URL or AppAPI auth")
-	}
-
-	endpoint, err := buildNextcloudAPIURL(cfg, "/ocs/v1.php/cloud/groups")
-	if err != nil {
-		return nil, err
-	}
-	respBody, err := getOCSJSONResponse(ctx, cfg, endpoint, authValue)
-	if err != nil {
-		return nil, err
-	}
-	groups, err := parseGroupsFromOCSResponse(respBody)
-	if err != nil {
-		return nil, err
-	}
-	return groups, nil
-}
-
-func fallbackGroupOptionsFromConfig(ctx context.Context, cfg Config, authValue string) []string {
-	values, err := getAppConfigValues(ctx, cfg, []string{allowedGroupsKey}, authValue)
-	if err != nil {
-		return []string{}
-	}
-	return parseAllowedGroupsValue(values[allowedGroupsKey])
-}
-
-func getSettingsAdminUser(ctx context.Context, cfg Config, authValue string) string {
-	values, err := getAppConfigValues(ctx, cfg, []string{settingsAdminUserKey}, authValue)
-	if err != nil {
-		return ""
-	}
-	if raw, ok := values[settingsAdminUserKey]; ok {
-		if s, ok := raw.(string); ok {
-			return strings.TrimSpace(s)
-		}
-	}
-	return ""
-}
-
-func appAPIAuthForUser(cfg Config, userID string) string {
-	if cfg.AppSecret == "" || userID == "" {
-		return ""
-	}
-	return base64.StdEncoding.EncodeToString([]byte(userID + ":" + cfg.AppSecret))
-}
-
-func stringListsIntersect(allowed, actual []string) bool {
-	actualSet := make(map[string]struct{}, len(actual))
-	for _, group := range actual {
-		actualSet[group] = struct{}{}
-	}
-	for _, group := range allowed {
-		if _, ok := actualSet[group]; ok {
-			return true
-		}
-	}
-	return false
 }
 
 func resolveCPULimit(percent, threadsPerJob int) CPULimit {

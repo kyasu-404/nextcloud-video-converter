@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -175,7 +174,7 @@ func TestConvertUsesAuthenticatedIdentity(t *testing.T) {
 	}
 }
 
-func TestSettingsFailureDeniesEveryConversionEntryPoint(t *testing.T) {
+func TestSettingsFailureDeniesConversion(t *testing.T) {
 	for _, upstream := range []struct {
 		name   string
 		status int
@@ -192,57 +191,17 @@ func TestSettingsFailureDeniesEveryConversionEntryPoint(t *testing.T) {
 			}))
 			defer server.Close()
 			settings := defaultAppSettings()
-			settings.AllowedGroups = []string{"editors"}
 			useTestSettings(t, settings, time.Time{})
 			cfg := Config{NextcloudURL: server.URL, AppID: "converter", AppSecret: "test-secret"}
 			conversion, _ := json.Marshal(testConversionRequest())
-			for _, entry := range []struct {
-				method, path, body string
-				handler            http.HandlerFunc
-			}{
-				{http.MethodPost, "/api/convert", string(conversion), makeConvertHandler(cfg)},
-				{http.MethodPost, "/api/metadata", `{"file_path":"/source.mkv"}`, makeMetadataHandler(cfg)},
-				{http.MethodPost, "/action/file", `{"fileId":123,"name":"source.mkv","userId":"admin"}`, makeActionHandler(cfg)},
-				{http.MethodGet, "/ui/convert.html", "", makeUIHandler(cfg)},
-			} {
-				r := httptest.NewRequest(entry.method, entry.path, strings.NewReader(entry.body))
-				r.Header.Set("AUTHORIZATION-APP-API", testAuth("bob"))
-				w := httptest.NewRecorder()
-				entry.handler(w, r)
-				if w.Code != http.StatusServiceUnavailable {
-					t.Errorf("%s returned HTTP %d, want 503: %s", entry.path, w.Code, w.Body.String())
-				}
+			r := httptest.NewRequest(http.MethodPost, "/api/convert", bytes.NewReader(conversion))
+			r.Header.Set("AUTHORIZATION-APP-API", testAuth("bob"))
+			w := httptest.NewRecorder()
+			makeConvertHandler(cfg)(w, r)
+			if w.Code != http.StatusServiceUnavailable {
+				t.Errorf("/api/convert returned HTTP %d, want 503: %s", w.Code, w.Body.String())
 			}
 		})
-	}
-}
-
-func TestPayloadCannotBorrowAnotherUsersGroup(t *testing.T) {
-	settings := defaultAppSettings()
-	settings.AllowedGroups = []string{"editors"}
-	useTestSettings(t, settings, time.Now().Add(time.Hour))
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/bob") {
-			t.Errorf("looked up an identity from the payload: %s", r.URL.Path)
-		}
-		fmt.Fprint(w, `{"ocs":{"data":{"groups":["users"]}}}`)
-	}))
-	defer server.Close()
-	cfg := Config{NextcloudURL: server.URL, AppID: "converter", AppSecret: "test-secret"}
-	for _, entry := range []struct {
-		path, body string
-		handler    http.HandlerFunc
-	}{
-		{"/api/convert", `{"user_id":"admin"}`, makeConvertHandler(cfg)},
-		{"/action/file", `{"fileId":123,"userId":"admin"}`, makeActionHandler(cfg)},
-	} {
-		r := httptest.NewRequest(http.MethodPost, entry.path, strings.NewReader(entry.body))
-		r.Header.Set("AUTHORIZATION-APP-API", testAuth("bob"))
-		w := httptest.NewRecorder()
-		entry.handler(w, r)
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("%s: HTTP %d, want 403", entry.path, w.Code)
-		}
 	}
 }
 

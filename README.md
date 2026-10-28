@@ -30,7 +30,6 @@ The ExApp side in this repository exposes:
 
 On enable, the ExApp registers AppAPI declarative admin settings under the ExApps settings section. Nextcloud stores changed values in AppConfig.
 
-- `allowed_groups` - selected Nextcloud group IDs. Empty means all logged-in users can use the converter.
 - `max_concurrent_jobs` - total concurrent conversions; default is `1`.
 - `max_concurrent_jobs_per_user` - concurrent conversions per user; default is `1`.
 - `max_queued_jobs_per_user` - waiting conversions per user; default is `3`. Set to `0` to accept only jobs that can start immediately.
@@ -38,12 +37,11 @@ On enable, the ExApp registers AppAPI declarative admin settings under the ExApp
 - `cpu_limit_percent` - maximum ffmpeg CPU budget from `1` to `100`; default is `50`.
 - `threads_per_job` - ffmpeg threads per job; default is `0`, which leaves thread selection unrestricted.
 
-Group access is enforced by the ExApp on `/action/file`, `/ui/convert.html`, `/api/metadata`, and `/api/convert`.
-If the settings service is unavailable, these endpoints return HTTP 503 instead of dropping group restrictions.
+Every logged-in Nextcloud user can use the converter; there is no group restriction.
+If the settings service is unavailable, `/api/convert` returns HTTP 503.
 The authenticated user owns the conversion; user IDs supplied in JSON are ignored. Only the owner can read or cancel a task.
 CPU limiting is applied with `cpulimit`; `threads_per_job` adds ffmpeg `-threads` only when it is greater than `0`.
 On Linux, cancellation and job timeouts stop the complete encoder process group, including `cpulimit` children.
-If AppAPI calls `/enabled` without a user context, set `settings_admin_user` in AppConfig to a Nextcloud admin user so the ExApp can populate group options.
 
 ## Build and run locally
 
