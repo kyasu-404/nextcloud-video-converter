@@ -433,7 +433,7 @@ func loadConfig() Config {
 		InsecureTLS: envBool("NEXTCLOUD_INSECURE_TLS", false),
 		AppID:       env("APP_ID", "video_converter_exapp"),
 		AppSecret:   env("APP_SECRET", ""),
-		AppVersion:  env("APP_VERSION", "1.0.20"),
+		AppVersion:  env("APP_VERSION", "1.0.21"),
 		AAVersion:   env("AA_VERSION", "4.0.0"),
 	}
 }
@@ -2878,9 +2878,9 @@ func sendNotification(cfg Config, userID, subject, message string) {
 		"object_id":    taskNotificationID(userID),
 		"subject_type": "app_api_ex_app",
 		"subject_params": map[string]any{
-			"rich_subject":        subject,
+			"rich_subject":        escapeL10nPercent(subject),
 			"rich_subject_params": map[string]any{},
-			"rich_message":        message,
+			"rich_message":        escapeL10nPercent(message),
 			"rich_message_params": map[string]any{},
 		},
 	}
@@ -2928,6 +2928,14 @@ func sendNotification(cfg Config, userID, subject, message string) {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		log.Printf("sendNotification: server returned %s: %s", resp.Status, strings.TrimSpace(string(respBody)))
 	}
+}
+
+// escapeL10nPercent doubles "%" characters. AppAPI passes notification texts
+// through Nextcloud's l10n (sprintf-style) with no arguments, so a lone "%"
+// (for example "50%" or a file name containing "%") would make the whole
+// notification list fail for the recipient.
+func escapeL10nPercent(text string) string {
+	return strings.ReplaceAll(text, "%", "%%")
 }
 
 func userIDFromAppAPIAuth(authValue string) string {

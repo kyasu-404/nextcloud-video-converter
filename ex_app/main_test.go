@@ -287,3 +287,17 @@ func TestBuildFFmpegArgs_BitmapSubtitles(t *testing.T) {
 	}
 }
 
+
+func TestEscapeL10nPercent(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain":               "plain",
+		"done about 50%":      "done about 50%%",
+		"100% sale (50%).mkv": "100%% sale (50%%).mkv",
+		"already %% escaped":  "already %%%% escaped",
+		"":                    "",
+	} {
+		if got := escapeL10nPercent(in); got != want {
+			t.Errorf("escapeL10nPercent(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
